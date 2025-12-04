@@ -17,7 +17,19 @@ import api from "./axios-config";
 export const getAllApplications = async () => {
   try {
     const response = await api.get("/Applications");
-    return response.data;
+    // Normalize statuses before returning to UI
+    const normalizeStatus = (s) => {
+      if (!s) return s;
+      const v = String(s).toLowerCase().trim();
+      // map legacy/alternate server values to canonical ones
+      if (v === "resubmitted") return "returned";
+      return v;
+    };
+
+    return (response.data || []).map((app) => ({
+      ...app,
+      status: normalizeStatus(app.status),
+    }));
   } catch (error) {
     console.error("❌ Get all applications error:", error);
     throw error;
@@ -32,6 +44,7 @@ export const getAllApplications = async () => {
 export const getMyApplications = async () => {
   try {
     const response = await api.get("/Applications/my-applications");
+    // Return raw backend data for client-side views (keep 'resubmitted')
     return response.data;
   } catch (error) {
     console.error("❌ Get my applications error:", error);
@@ -52,6 +65,7 @@ export const getApplicationById = async (id) => {
     }
 
     const response = await api.get(`/Applications/${id}`);
+    // Return raw backend data for client-side views (keep 'resubmitted')
     return response.data;
   } catch (error) {
     console.error(`❌ Get application ${id} error:`, error);
@@ -95,6 +109,42 @@ export const createApplication = async (applicationData) => {
     return response.data;
   } catch (error) {
     console.error("❌ Create application error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Update application by ID (Client only)
+ * PUT /api/Applications/{id}
+ * @param {string} id - Application ID
+ * @param {Object} applicationData - Application data to update
+ * @returns {Promise<Object>} Updated application
+ */
+export const updateApplication = async (id, applicationData) => {
+  try {
+    if (!id) throw new Error("Application ID is required");
+    if (!applicationData) throw new Error("Application data is required");
+    try {
+      const response = await api.put(`/Applications/${id}`, applicationData);
+      return response.data;
+    } catch (err) {
+      // If the backend does not support PUT for updates, try PATCH as a fallback.
+      if (err.response?.status === 405) {
+        try {
+          const patchResp = await api.patch(
+            `/Applications/${id}`,
+            applicationData
+          );
+          return patchResp.data;
+        } catch (patchErr) {
+          console.error(`❌ Patch update application ${id} error:`, patchErr);
+          throw patchErr;
+        }
+      }
+      throw err;
+    }
+  } catch (error) {
+    console.error(`❌ Update application ${id} error:`, error);
     throw error;
   }
 };
@@ -413,6 +463,8 @@ export const getStatusColor = (status) => {
     case "returned":
     case "needs_revision":
       return "bg-orange-100 text-orange-800";
+    case "resubmitted":
+      return "bg-blue-50 text-blue-700";
     case "rejected":
     case "declined":
       return "bg-red-100 text-red-800";
@@ -439,6 +491,8 @@ export const getStatusIcon = (status) => {
     case "returned":
     case "needs_revision":
       return XCircle;
+    case "resubmitted":
+      return Clock;
     case "rejected":
     case "declined":
       return XCircle;

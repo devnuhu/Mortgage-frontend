@@ -2,32 +2,54 @@
 import axios from "axios";
 
 // Get environment variables with fallbacks
-const getEnvVar = (name, defaultValue) => {
-  // Try different ways to access environment variables
-  if (typeof process !== "undefined" && process.env) {
-    return process.env[name] || defaultValue;
-  }
-  if (typeof import.meta !== "undefined" && import.meta.env) {
-    return import.meta.env[name] || defaultValue;
-  }
-  return defaultValue;
-};
-
-const isDevelopment = getEnvVar("NODE_ENV", "development") === "development";
-const API_BASE_URL = getEnvVar(
-  "REACT_APP_API_URL",
-  "http://localhost:5062/api"
-);
+// Prefer Vite-style env (VITE_API_URL), fall back to REACT_APP_API_URL, then default
+const isBrowser = typeof window !== "undefined";
+let importMetaEnv = {};
+try {
+  // import.meta is available in ESM environments (Vite). Access safely.
+  importMetaEnv = import.meta && import.meta.env ? import.meta.env : {};
+} catch (e) {
+  importMetaEnv = {};
+}
+const envVite =
+  importMetaEnv && importMetaEnv.VITE_API_URL
+    ? importMetaEnv.VITE_API_URL
+    : null;
+const envReactApp =
+  (typeof process !== "undefined" &&
+    process.env &&
+    process.env.REACT_APP_API_URL) ||
+  null;
+const API_BASE_URL = envVite || envReactApp || "http://localhost:5062/api";
+const isDevelopment =
+  (importMetaEnv?.MODE ||
+    (typeof process !== "undefined" && process.env?.NODE_ENV) ||
+    "development") === "development";
 
 // Create axios instance with your .NET API base URL
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000, // 30 seconds timeout
+  timeout: 30000, // 60 seconds timeout (increased from 30s to allow slower connections)
   headers: {
     "Content-Type": "application/json",
     Accept: "application/json",
   },
+  withCredentials: true, // Enable sending cookies with cross-origin requests
 });
+
+// Track outstanding requests and emit global events so UI can show a spinner
+let _outstandingRequestCount = 0;
+const emitApiActivity = () => {
+  try {
+    window.dispatchEvent(
+      new CustomEvent("api-activity", {
+        detail: { count: _outstandingRequestCount },
+      })
+    );
+  } catch (e) {
+    // running in non-browser env or event dispatch failed
+  }
+};
 
 // Request interceptor to add JWT token to all requests
 api.interceptors.request.use(
@@ -49,6 +71,10 @@ api.interceptors.request.use(
       }
     }
 
+    // increment outstanding requests and notify UI
+    _outstandingRequestCount = Math.max(0, _outstandingRequestCount + 1);
+    emitApiActivity();
+
     return config;
   },
   (error) => {
@@ -60,6 +86,9 @@ api.interceptors.request.use(
 // Response interceptor to handle common response patterns
 api.interceptors.response.use(
   (response) => {
+    // decrement outstanding requests and notify UI
+    _outstandingRequestCount = Math.max(0, _outstandingRequestCount - 1);
+    emitApiActivity();
     // Log successful responses in development
     if (isDevelopment) {
       console.log(
@@ -72,6 +101,9 @@ api.interceptors.response.use(
     return response;
   },
   (error) => {
+    // decrement outstanding requests and notify UI
+    _outstandingRequestCount = Math.max(0, _outstandingRequestCount - 1);
+    emitApiActivity();
     // Enhanced error logging
     if (isDevelopment) {
       console.error(`❌ API Error:`, {
@@ -130,8 +162,22 @@ api.interceptors.response.use(
     // Handle network errors
     if (!error.response) {
       console.error("🌐 Network error or server is not responding");
-      error.message =
-        "Network error. Please check your connection and try again.";
+
+      // Distinguish between timeout and connection errors
+      if (error.code === "ECONNABORTED") {
+        error.message =
+          "Request timeout. The server is taking too long to respond. Please check if the server is running and try again.";
+      } else if (error.code === "ECONNREFUSED") {
+        error.message =
+          "Cannot connect to the server. Please ensure the API server is running at " +
+          API_BASE_URL;
+      } else if (error.message && error.message.includes("CORS")) {
+        error.message =
+          "CORS policy error. The backend server is not configured to accept requests from this origin. Please contact your administrator.";
+      } else {
+        error.message =
+          "Network error. Please check your connection and try again.";
+      }
     }
 
     // Handle server errors (5xx)

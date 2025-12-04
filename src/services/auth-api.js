@@ -171,17 +171,30 @@ export const handleLoginSuccess = (loginResponse) => {
   const payload =
     loginResponse?.data || loginResponse?.result || loginResponse || {};
 
-  const token = payload.token || payload.Token || payload.accessToken || payload.AccessToken;
+  const token =
+    payload.token ||
+    payload.Token ||
+    payload.accessToken ||
+    payload.AccessToken;
   const refreshToken =
     payload.refreshToken || payload.RefreshToken || payload.refresh || null;
-  const expiresAt = payload.expiresAt || payload.ExpiresAt || payload.expiry || null;
+  const expiresAt =
+    payload.expiresAt || payload.ExpiresAt || payload.expiry || null;
 
   // Try common user object locations
   const userData =
-    payload.userData || payload.UserData || payload.user || payload.User || payload;
+    payload.userData ||
+    payload.UserData ||
+    payload.user ||
+    payload.User ||
+    payload;
 
   const requiresPasswordChange =
-    payload.requiresPasswordChange || payload.RequiresPasswordChange || payload.needsPasswordChange || payload.isFirstLogin || false;
+    payload.requiresPasswordChange ||
+    payload.RequiresPasswordChange ||
+    payload.needsPasswordChange ||
+    payload.isFirstLogin ||
+    false;
 
   if (!token) {
     throw new Error("No token received from server");

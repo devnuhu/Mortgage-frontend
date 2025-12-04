@@ -2,9 +2,17 @@ import React, { useState } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { UserRole, isAdmin, isSuperAdmin } from "../../types/auth";
 import logo from "../../assets/Logo.png";
+import toast from "react-hot-toast";
+import ConfirmModal from "../ui/ConfirmModal";
+
 const Header = () => {
   const { user, logout } = useAuth();
   const [showUserMenu, setShowUserMenu] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  const confirmLogout = () => {
+    setShowLogoutConfirm(true);
+  };
 
   const handleLogout = () => {
     logout();
@@ -27,7 +35,7 @@ const Header = () => {
   const getRoleColor = () => {
     if (!user) return "#6B7280";
     return isSuperAdmin(user)
-      ? "#1F2937"
+      ? "#063a82ff"
       : isAdmin(user)
       ? "#EF4444"
       : "#A8C045";
@@ -41,9 +49,9 @@ const Header = () => {
             {/* Logo and System Name */}
             <div className="flex items-center">
               <div className="flex-shrink-0 flex items-center">
-                <div className="h-24 w-24 rounded-lg flex items-center justify-center mr-3">
+                <div className="h-24 w-24 rounded-lg flex items-center justify-center mr-10">
                   <svg
-                    className="h-5 w-5 text-white"
+                    className="h-8 w-8 text-white"
                     fill="none"
                     viewBox="0 0 24 24"
                     stroke="currentColor"
@@ -55,11 +63,11 @@ const Header = () => {
                       d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2zm0 0V9a2 2 0 012-2h14a2 2 0 012 2v2M7 7V5a2 2 0 012-2h6a2 2 0 012 2v2"
                     />
                   </svg>
-                  <img src={logo} alt="" />
+                  <img className="h-10 w-23 text-white " src={logo} alt="" />
                 </div>
                 <div>
-                  <h1 className="text-lg font-semibold text-gray-900">
-                    Mortgage Buddy
+                  <h1 className="text-lg font-semibold text-gray-500">
+                    Access ARM Mortgage
                   </h1>
                   <p className="text-xs text-gray-500 hidden sm:block">
                     {isAdmin(user)
@@ -156,7 +164,9 @@ const Header = () => {
                         onClick={() => {
                           setShowUserMenu(false);
                           // Will add profile management later
-                          alert("Profile management coming in next modules!");
+                          toast.info(
+                            "Profile management coming in next modules!"
+                          );
                         }}
                         className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                       >
@@ -182,7 +192,7 @@ const Header = () => {
                         onClick={() => {
                           setShowUserMenu(false);
                           // Will add change password later
-                          alert("Change password coming in next modules!");
+                          toast.info("Change password coming in next modules!");
                         }}
                         className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                       >
@@ -206,7 +216,7 @@ const Header = () => {
 
                       <div className="border-t border-gray-100">
                         <button
-                          onClick={handleLogout}
+                          onClick={confirmLogout}
                           className="block w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50"
                         >
                           <div className="flex items-center">
@@ -243,6 +253,23 @@ const Header = () => {
           onClick={() => setShowUserMenu(false)}
         ></div>
       )}
+
+      {/* Logout Confirmation Modal */}
+      <ConfirmModal
+        isOpen={showLogoutConfirm}
+        title="Confirm Logout"
+        message="Are you sure you want to logout? You will need to login again to access the application."
+        confirmLabel="Logout"
+        cancelLabel="Cancel"
+        onConfirm={() => {
+          setShowLogoutConfirm(false);
+          handleLogout();
+        }}
+        onCancel={() => {
+          setShowLogoutConfirm(false);
+          setShowUserMenu(false);
+        }}
+      />
     </>
   );
 };

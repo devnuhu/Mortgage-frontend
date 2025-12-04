@@ -131,11 +131,37 @@ export const getFilesByApplication = async (applicationId) => {
  * Download file
  * GET /api/file/download/{fileId}
  */
-export const downloadFile = async (fileId) => {
+export const downloadFile = async (fileId, fileName = null) => {
   try {
     const response = await api.get(`/file/download/${fileId}`, {
       responseType: "blob",
     });
+
+    // Create blob and trigger browser download
+    const blob = new Blob([response.data]);
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+
+    // Try to extract filename from Content-Disposition header
+    const contentDisposition = response.headers["content-disposition"];
+    let downloadFileName = fileName;
+
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/i);
+      if (filenameMatch) {
+        downloadFileName = filenameMatch[1];
+      }
+    }
+
+    link.download = downloadFileName || `document-${fileId}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Clean up blob URL
+    window.URL.revokeObjectURL(downloadUrl);
+
     return response.data;
   } catch (error) {
     console.error(`Error downloading file ${fileId}:`, error);

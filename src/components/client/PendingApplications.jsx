@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
+import { useApplication } from "../../context/ApplicationContext";
 import {
   Clock,
   CheckCircle,
@@ -22,6 +24,7 @@ import {
   Phone,
   Loader2,
 } from "lucide-react";
+import ConfirmModal from "../ui/ConfirmModal";
 import {
   getMyApplications,
   getApplicationDocuments,
@@ -35,6 +38,8 @@ import {
 
 const PendingApplications = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
+  const { isClientResubmitted, removeClientResubmittedIds } = useApplication();
 
   // State management
   const [applications, setApplications] = useState([]);
@@ -50,6 +55,10 @@ const PendingApplications = () => {
   const [sortOrder, setSortOrder] = useState("desc");
   const [selectedApplication, setSelectedApplication] = useState(null);
   const [showModal, setShowModal] = useState(false);
+  const [cannotEditModal, setCannotEditModal] = useState({
+    open: false,
+    message: "",
+  });
 
   // Load applications on component mount
   useEffect(() => {
@@ -61,7 +70,44 @@ const PendingApplications = () => {
     try {
       setLoading(true);
       setError(null);
-      const data = await getMyApplications();
+      let data = await getMyApplications();
+
+      // Reconcile any client-side resubmitted markers persisted in sessionStorage
+      try {
+        const raw = sessionStorage.getItem("mmgt_client_resubmitted_ids");
+        const persisted = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(persisted) && persisted.length > 0) {
+          const idsToRemove = [];
+          data = data.map((app) => {
+            if (!persisted.includes(app.id)) return app;
+
+            const serverStatus = (app.status || "").toLowerCase();
+            // If the server still reports 'rejected', show the server status
+            // and clear the stale persisted marker so rejected apps are visible.
+            if (serverStatus === "rejected") {
+              idsToRemove.push(app.id);
+              return app;
+            }
+
+            // Otherwise, show the client-side optimistic 'resubmitted' badge
+            return { ...app, status: "resubmitted" };
+          });
+
+          if (
+            idsToRemove.length > 0 &&
+            typeof removeClientResubmittedIds === "function"
+          ) {
+            try {
+              removeClientResubmittedIds(idsToRemove);
+            } catch (e) {
+              console.warn("Failed to remove stale client resubmitted ids:", e);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn("Failed to apply client resubmitted mutations:", err);
+      }
+
       setApplications(data);
     } catch (err) {
       console.error("Error loading applications:", err);
@@ -118,7 +164,9 @@ const PendingApplications = () => {
       await downloadDocument(document.id, document.fileName);
     } catch (err) {
       console.error("Download failed:", err);
-      alert("Failed to download document. Please try again.");
+      // Non-blocking toast notification
+      const toast = (await import("react-hot-toast")).default;
+      toast.error("Failed to download document. Please try again.");
     }
   };
 
@@ -192,6 +240,23 @@ const PendingApplications = () => {
     setSelectedApplication(null);
   };
 
+  // Handle edit and resubmit
+  const handleEditAndResubmit = () => {
+    if (!selectedApplication) return;
+    const status = (selectedApplication.status || "").toLowerCase();
+    const isEditable = status === "draft" || status === "rejected";
+    if (!isEditable) {
+      setCannotEditModal({
+        open: true,
+        message: `Cannot edit application in ${selectedApplication.status} status. Only Draft or Rejected applications can be edited.`,
+      });
+      return;
+    }
+    navigate("/client/submit-application", {
+      state: { appId: selectedApplication.id },
+    });
+  };
+
   // Handle sort change
   const handleSortChange = (field) => {
     if (sortBy === field) {
@@ -263,6 +328,15 @@ const PendingApplications = () => {
 
   return (
     <div className="space-y-6">
+      <ConfirmModal
+        isOpen={cannotEditModal.open}
+        title="Cannot Edit Application"
+        message={cannotEditModal.message}
+        onConfirm={() => setCannotEditModal({ open: false, message: "" })}
+        onCancel={() => setCannotEditModal({ open: false, message: "" })}
+        confirmLabel="OK"
+        cancelLabel="Close"
+      />
       {/* Header */}
       <div className="bg-white rounded-lg shadow-sm border p-6">
         <div className="flex justify-between items-start mb-6">
@@ -418,7 +492,22 @@ const PendingApplications = () => {
                       {formatCurrency(application.loanAmount)}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <StatusBadge status={application.status} />
+                      {
+                        // Prefer authoritative server 'rejected' status over
+                        // client-side optimistic 'resubmitted' badge. This
+                        // prevents a stale client marker from hiding a true
+                        // server-side rejection.
+                      }
+                      <StatusBadge
+                        status={
+                          (application.status || "").toLowerCase() ===
+                          "rejected"
+                            ? "rejected"
+                            : isClientResubmitted(application.id)
+                            ? "resubmitted"
+                            : application.status
+                        }
+                      />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       <div className="flex items-center">
@@ -446,9 +535,9 @@ const PendingApplications = () => {
       {/* Application Details Modal */}
       {showModal && selectedApplication && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
             {/* Modal Header */}
-            <div className="border-b px-6 py-4 flex items-center justify-between">
+            <div className="border-b px-6 py-4 flex items-center justify-between flex-shrink-0">
               <div>
                 <h3 className="text-xl font-semibold text-gray-900">
                   Application Details
@@ -466,7 +555,7 @@ const PendingApplications = () => {
             </div>
 
             {/* Modal Content */}
-            <div className="overflow-y-auto max-h-[calc(90vh-120px)]">
+            <div className="overflow-y-auto flex-1 min-h-0">
               <div className="p-6 space-y-6">
                 {/* Application Status */}
                 <div className="bg-gray-50 rounded-lg p-4">
@@ -476,7 +565,13 @@ const PendingApplications = () => {
                         Application Status
                       </h4>
                       <div className="mt-2">
-                        <StatusBadge status={selectedApplication.status} />
+                        <StatusBadge
+                          status={
+                            isClientResubmitted(selectedApplication.id)
+                              ? "resubmitted"
+                              : selectedApplication.status
+                          }
+                        />
                       </div>
                     </div>
                     <div className="text-right text-sm text-gray-500">
@@ -629,7 +724,13 @@ const PendingApplications = () => {
                           >
                             <div className="flex items-start justify-between mb-2">
                               <div className="flex items-center space-x-2">
-                                <StatusBadge status={review.status} />
+                                <StatusBadge
+                                  status={
+                                    isClientResubmitted(selectedApplication.id)
+                                      ? "resubmitted"
+                                      : review.status
+                                  }
+                                />
                                 <span className="text-sm text-gray-500">
                                   by {review.reviewedByName}
                                 </span>
@@ -716,10 +817,21 @@ const PendingApplications = () => {
             </div>
 
             {/* Modal Footer */}
-            <div className="border-t px-6 py-4 bg-gray-50 flex justify-end">
+            <div className="border-t px-6 py-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-3 sm:gap-4 sm:justify-between items-stretch sm:items-center flex-shrink-0">
+              {selectedApplication &&
+                (selectedApplication.status === "draft" ||
+                  selectedApplication.status === "returned" ||
+                  selectedApplication.status === "rejected") && (
+                  <button
+                    onClick={handleEditAndResubmit}
+                    className="px-6 py-2.5 text-sm font-medium text-white bg-[#A8C045] hover:bg-[#94a838] active:bg-[#7d8f2f] rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
+                  >
+                    Edit & Resubmit
+                  </button>
+                )}
               <button
                 onClick={handleCloseModal}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 transition-colors"
+                className="px-6 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-100 active:bg-gray-50 transition-all duration-200 shadow-sm hover:shadow-md"
               >
                 Close
               </button>

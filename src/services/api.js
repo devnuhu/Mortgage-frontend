@@ -303,7 +303,7 @@ export const uploadPdfForApplication = async (
     formData.append("DocumentType", documentType);
 
     // Make API call with multipart/form-data
-    const response = await api.post("/File/upload", formData, {
+    const response = await api.post("/file/upload", formData, {
       headers: {
         "Content-Type": "multipart/form-data",
       },
@@ -330,6 +330,10 @@ export const uploadPdfForApplication = async (
       }
     } else if (error.response?.status === 401) {
       throw new Error("You must be logged in to upload files");
+    } else if (error.response?.status === 403) {
+      throw new Error(
+        "You don't have permission to upload files or the application is not editable"
+      );
     } else if (!error.response) {
       throw new Error("Network error. Please check your connection");
     }
@@ -350,7 +354,7 @@ export const listFiles = async (applicationId) => {
       throw new Error("Application ID is required");
     }
 
-    const response = await api.get(`/File/application/${applicationId}`);
+    const response = await api.get(`/file/application/${applicationId}`);
 
     console.log("📋 Files retrieved:", {
       applicationId,
@@ -365,6 +369,10 @@ export const listFiles = async (applicationId) => {
       return []; // Return empty array if no files found
     } else if (error.response?.status === 401) {
       throw new Error("You must be logged in to view files");
+    } else if (error.response?.status === 403) {
+      throw new Error(
+        "You don't have permission to view files for this application"
+      );
     } else if (!error.response) {
       throw new Error("Network error. Please check your connection");
     }
@@ -385,7 +393,7 @@ export const deleteFileById = async (fileId) => {
       throw new Error("File ID is required");
     }
 
-    const response = await api.delete(`/File/${fileId}`);
+    const response = await api.delete(`/file/${fileId}`);
 
     console.log("🗑️ File deleted successfully:", { fileId });
 
@@ -411,19 +419,45 @@ export const deleteFileById = async (fileId) => {
  * Download file by ID
  * GET /api/File/download/{fileId}
  * @param {string} fileId - File ID to download
+ * @param {string} fileName - Optional filename for download
  * @returns {Promise<Blob>} File blob for download
  */
-export const downloadFile = async (fileId) => {
+export const downloadFile = async (fileId, fileName = null) => {
   try {
     if (!fileId) {
       throw new Error("File ID is required");
     }
 
-    const response = await api.get(`/File/download/${fileId}`, {
+    const response = await api.get(`/file/download/${fileId}`, {
       responseType: "blob", // Important for file downloads
     });
 
     console.log("⬇️ File download started:", { fileId });
+
+    // Create blob and trigger browser download
+    const blob = new Blob([response.data]);
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+
+    // Try to extract filename from Content-Disposition header
+    const contentDisposition = response.headers["content-disposition"];
+    let downloadFileName = fileName;
+
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/i);
+      if (filenameMatch) {
+        downloadFileName = filenameMatch[1];
+      }
+    }
+
+    link.download = downloadFileName || `document-${fileId}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    // Clean up blob URL
+    window.URL.revokeObjectURL(downloadUrl);
 
     return response.data;
   } catch (error) {
@@ -435,6 +469,63 @@ export const downloadFile = async (fileId) => {
       throw new Error("You must be logged in to download files");
     } else if (error.response?.status === 403) {
       throw new Error("You don't have permission to download this file");
+    }
+
+    throw error;
+  }
+};
+
+/**
+ * Replace an existing file by ID
+ * POST /api/File/replace
+ * @param {string} existingFileId - Existing file ID to replace
+ * @param {File} file - New file to upload
+ * @returns {Promise<Object>} Replace response
+ */
+export const replaceFileById = async (existingFileId, file) => {
+  try {
+    if (!existingFileId || !file) {
+      throw new Error("File ID and replacement file are required");
+    }
+
+    if (file.type !== "application/pdf") {
+      throw new Error("Only PDF files are allowed");
+    }
+
+    const formData = new FormData();
+    formData.append("ExistingFileId", existingFileId);
+    formData.append("File", file);
+
+    const response = await api.post("/file/replace", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+    });
+
+    console.log("🔁 File replaced successfully:", {
+      existingFileId,
+      fileName: file.name,
+    });
+
+    return response.data;
+  } catch (error) {
+    console.error("❌ Replace file error:", error);
+
+    if (error.response?.status === 400) {
+      const serverMessage = error.response.data?.message;
+      if (serverMessage?.toLowerCase().includes("file type")) {
+        throw new Error("Invalid file type. Only PDF files are allowed");
+      } else if (serverMessage?.toLowerCase().includes("size")) {
+        throw new Error("File size exceeds maximum limit");
+      }
+    } else if (error.response?.status === 401) {
+      throw new Error("You must be logged in to replace files");
+    } else if (error.response?.status === 403) {
+      throw new Error(
+        "You don't have permission to replace this file or the application is not in a replacable state"
+      );
+    } else if (!error.response) {
+      throw new Error("Network error. Please check your connection");
     }
 
     throw error;

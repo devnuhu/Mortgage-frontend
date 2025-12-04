@@ -10,6 +10,8 @@ import { useAuth } from "./AuthContext";
 import {
   createApplication as apiCreateApplication,
   submitApplicationById,
+  getApplicationById,
+  getApplicationDocuments,
 } from "../services/application-api";
 
 // Application Status Constants
@@ -19,6 +21,7 @@ const APPLICATION_STATUS = {
   UNDER_REVIEW: "under_review",
   APPROVED: "approved",
   REJECTED: "rejected",
+  RETURNED: "returned",
 };
 
 // Form Steps
@@ -76,6 +79,31 @@ export const ApplicationProvider = ({ children }) => {
 
   // Backend document count tracking
   const [backendDocumentCount, setBackendDocumentCount] = useState(0);
+  // Track client-side resubmitted application IDs for optimistic UI
+  const [clientResubmittedIds, setClientResubmittedIds] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem("mmgt_client_resubmitted_ids");
+      return raw ? JSON.parse(raw) : [];
+    } catch (err) {
+      return [];
+    }
+  });
+
+  const removeClientResubmittedIds = useCallback((ids) => {
+    if (!Array.isArray(ids) || ids.length === 0) return;
+    setClientResubmittedIds((prev) => {
+      const next = (prev || []).filter((id) => !ids.includes(id));
+      try {
+        sessionStorage.setItem(
+          "mmgt_client_resubmitted_ids",
+          JSON.stringify(next)
+        );
+      } catch (err) {
+        console.warn("Could not persist client resubmitted ids:", err);
+      }
+      return next;
+    });
+  }, []);
 
   // Form validation errors
   const [errors, setErrors] = useState({});
@@ -128,7 +156,7 @@ export const ApplicationProvider = ({ children }) => {
   };
 
   // Validation function
-  const validateField = useCallback((fieldName, value) => {
+  const validateField = useCallback((fieldName, value, appData = null) => {
     const rule = validationRules[fieldName];
     if (!rule) return null;
 
@@ -179,6 +207,22 @@ export const ApplicationProvider = ({ children }) => {
       }
     }
 
+    // Property value validation: must equal equity + loan + supplementary
+    if (fieldName === "propertyValue" && appData) {
+      const equityValue = parseFloat(appData.equityValue) || 0;
+      const loanAmount = parseFloat(appData.loanAmount) || 0;
+      const supplementaryValue = parseFloat(appData.supplementaryValue) || 0;
+      const propertyValue = parseFloat(value) || 0;
+
+      const expectedSum = equityValue + loanAmount + supplementaryValue;
+
+      // Allow a tiny epsilon to account for floating point rounding
+      const epsilon = 0.01;
+      if (Math.abs(propertyValue - expectedSum) > epsilon) {
+        return `Property Value must equal Equity Value (${equityValue}) + Loan Amount (${loanAmount}) + Supplementary Value (${supplementaryValue}) = ${expectedSum}`;
+      }
+    }
+
     return null;
   }, []);
 
@@ -196,6 +240,7 @@ export const ApplicationProvider = ({ children }) => {
             "rsaPin",
             "equityValue",
             "supplementaryValue",
+            "loanAmount",
             "loanAmount",
             "propertyValue",
           ];
@@ -221,6 +266,7 @@ export const ApplicationProvider = ({ children }) => {
             "equityValue",
             "supplementaryValue",
             "loanAmount",
+            "loanAmount",
             "propertyValue",
           ];
 
@@ -240,7 +286,7 @@ export const ApplicationProvider = ({ children }) => {
       // Validate each field
       fieldsToValidate.forEach((field) => {
         const fieldValue = currentApplication[field];
-        const error = validateField(field, fieldValue);
+        const error = validateField(field, fieldValue, currentApplication);
         if (error) {
           newErrors[field] = error;
         }
@@ -250,7 +296,8 @@ export const ApplicationProvider = ({ children }) => {
       if (currentApplication.middleName) {
         const middleNameError = validateField(
           "middleName",
-          currentApplication.middleName
+          currentApplication.middleName,
+          currentApplication
         );
         if (middleNameError) {
           newErrors.middleName = middleNameError;
@@ -285,21 +332,63 @@ export const ApplicationProvider = ({ children }) => {
     (field, value) => {
       console.log(`📝 Updating ${field}:`, value);
 
-      setCurrentApplication((prev) => ({
-        ...prev,
-        [field]: value,
-      }));
+      setCurrentApplication((prev) => {
+        const updated = {
+          ...prev,
+          [field]: value,
+        };
 
-      // Clear error for this field
-      if (errors[field]) {
-        setErrors((prev) => {
-          const newErrors = { ...prev };
-          delete newErrors[field];
-          return newErrors;
-        });
-      }
+        // If any of the financial fields change, validate property value formula
+        if (
+          [
+            "equityValue",
+            "loanAmount",
+            "supplementaryValue",
+            "propertyValue",
+          ].includes(field)
+        ) {
+          // Validate property value if all financial fields have values
+          if (
+            updated.equityValue !== "" &&
+            updated.loanAmount !== "" &&
+            updated.supplementaryValue !== "" &&
+            updated.propertyValue !== ""
+          ) {
+            const error = validateField(
+              "propertyValue",
+              updated.propertyValue,
+              updated
+            );
+            setErrors((prev) => {
+              if (error) {
+                return { ...prev, propertyValue: error };
+              } else {
+                const newErrors = { ...prev };
+                delete newErrors.propertyValue;
+                return newErrors;
+              }
+            });
+          } else {
+            // Clear error if not all fields are filled yet
+            setErrors((prev) => {
+              const newErrors = { ...prev };
+              delete newErrors.propertyValue;
+              return newErrors;
+            });
+          }
+        } else if (errors[field]) {
+          // Clear error for non-financial fields
+          setErrors((prev) => {
+            const newErrors = { ...prev };
+            delete newErrors[field];
+            return newErrors;
+          });
+        }
+
+        return updated;
+      });
     },
-    [errors]
+    [errors, validateField]
   );
 
   // Document management (local staging only)
@@ -451,6 +540,8 @@ export const ApplicationProvider = ({ children }) => {
       return { success: false, error: "Application not properly created" };
     }
 
+    const preStatus = (currentApplication.status || "").toLowerCase();
+
     try {
       setIsSubmitting(true);
 
@@ -466,6 +557,41 @@ export const ApplicationProvider = ({ children }) => {
           ...prev,
           status: APPLICATION_STATUS.SUBMITTED,
         }));
+
+        // If this was a resubmission of a rejected/returned app, mark it locally
+        if (preStatus === "rejected" || preStatus === "returned") {
+          setClientResubmittedIds((prev) => {
+            const next = Array.from(
+              new Set([
+                ...(prev || []),
+                currentApplication.backendApplicationId,
+              ])
+            );
+            try {
+              sessionStorage.setItem(
+                "mmgt_client_resubmitted_ids",
+                JSON.stringify(next)
+              );
+            } catch (err) {
+              console.warn("Could not persist client resubmitted ids:", err);
+            }
+            return next;
+          });
+        }
+
+        // Refresh application from backend to pick up any status/history changes
+        try {
+          if (
+            loadBackendApplication &&
+            currentApplication?.backendApplicationId
+          ) {
+            await loadBackendApplication(
+              currentApplication.backendApplicationId
+            );
+          }
+        } catch (err) {
+          console.error("Failed to refresh application after submit:", err);
+        }
 
         return {
           success: true,
@@ -497,6 +623,64 @@ export const ApplicationProvider = ({ children }) => {
       setIsSubmitting(false);
     }
   }, [currentApplication, validateForm]);
+
+  // Load an existing backend application into the form for editing
+  const loadBackendApplication = useCallback(async (applicationId) => {
+    if (!applicationId) return false;
+    try {
+      setIsSubmitting(true);
+
+      const applicationDto = await getApplicationById(applicationId);
+      // Fetch documents to determine backendDocumentCount
+      let docs = [];
+      try {
+        docs = await getApplicationDocuments(applicationId);
+      } catch (err) {
+        console.warn("Could not fetch application documents:", err);
+        docs = [];
+      }
+
+      // Map DTO fields into currentApplication shape
+      setCurrentApplication((prev) => ({
+        ...prev,
+        backendApplicationId: applicationDto.id,
+        applicationNumber: applicationDto.applicationNumber || "",
+        status: applicationDto.status || APPLICATION_STATUS.DRAFT,
+        firstName: applicationDto.firstName || prev.firstName,
+        middleName: applicationDto.middleName || prev.middleName,
+        lastName: applicationDto.lastName || prev.lastName,
+        rsaPin: applicationDto.rsaPin || prev.rsaPin,
+        equityValue:
+          applicationDto.equityValue !== undefined
+            ? String(applicationDto.equityValue)
+            : prev.equityValue,
+        supplementaryValue:
+          applicationDto.supplementaryValue !== undefined
+            ? String(applicationDto.supplementaryValue)
+            : prev.supplementaryValue,
+        loanAmount:
+          applicationDto.loanAmount !== undefined
+            ? String(applicationDto.loanAmount)
+            : prev.loanAmount,
+        propertyValue:
+          applicationDto.propertyValue !== undefined
+            ? String(applicationDto.propertyValue)
+            : prev.propertyValue,
+      }));
+
+      setBackendDocumentCount(docs?.length || 0);
+
+      // Move user to the client details step so they can edit
+      setCurrentStep(FORM_STEPS.CLIENT_DETAILS);
+
+      return true;
+    } catch (error) {
+      console.error("Failed to load backend application:", error);
+      return false;
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, []);
 
   // Reset form
   const resetForm = useCallback(() => {
@@ -625,6 +809,11 @@ export const ApplicationProvider = ({ children }) => {
     errors,
     isSubmitting,
 
+    // Client-side resubmission tracking
+    clientResubmittedIds,
+    isClientResubmitted: (id) => (clientResubmittedIds || []).includes(id),
+    removeClientResubmittedIds,
+
     // Form actions
     updateApplicationField,
     addDocument,
@@ -641,6 +830,8 @@ export const ApplicationProvider = ({ children }) => {
     // Form submission
     submitApplication,
     resetForm,
+    // Load existing backend application for edit/resubmit
+    loadBackendApplication,
 
     // Validation
     validateForm,

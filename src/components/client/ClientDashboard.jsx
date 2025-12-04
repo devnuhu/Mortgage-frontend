@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from "react";
+import toast from "react-hot-toast";
 import { useAuth } from "../../context/AuthContext";
+import { useNavigate } from "react-router-dom";
 import {
   getMyApplications,
   calculateApplicationStats,
@@ -10,7 +12,9 @@ import { getStatusIcon } from "../common/StatusIcons";
 
 const ClientDashboard = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [applications, setApplications] = useState([]);
+  const [isNavigating, setIsNavigating] = useState(false);
   const [stats, setStats] = useState({
     total: 0,
     pending: 0,
@@ -86,7 +90,48 @@ const ClientDashboard = () => {
   };
 
   const handleQuickAction = (action) => {
-    alert(`Navigation to ${action} - Will be implemented in next modules!`);
+    // Show a quick transition overlay to improve perceived performance
+    setIsNavigating(true);
+
+    const perform = () => {
+      if (
+        typeof action === "string" &&
+        action.startsWith("application-details/")
+      ) {
+        const parts = action.split("/");
+        const appId = parts[1];
+        if (appId) {
+          navigate(`/client/application/${appId}`);
+          setIsNavigating(false);
+          return;
+        }
+      }
+
+      switch (action) {
+        case "submit-application":
+          navigate("/client/submit-application");
+          break;
+        case "pending-applications":
+          navigate("/client/pending-applications");
+          break;
+        case "returned-docs":
+          navigate("/client/returned-docs");
+          break;
+        case "profile":
+          navigate("/client/profile");
+          break;
+        default:
+          toast.info(
+            `Navigation to ${action} - Will be implemented in next modules!`
+          );
+      }
+
+      // small delay to let the overlay be visible briefly on fast navigation
+      setTimeout(() => setIsNavigating(false), 200);
+    };
+
+    // Small delay to allow the overlay to paint before navigation
+    setTimeout(perform, 60);
   };
 
   const handleRetry = () => {
@@ -102,7 +147,14 @@ const ClientDashboard = () => {
       <div className="space-y-6">
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900">
-            Welcome back, {user?.pmiCompanyName || "PMI Company"}!
+            Welcome back,{" "}
+            {(user &&
+              (user.fullName ||
+                `${user.firstName || ""} ${user.lastName || ""}`.trim())) ||
+              user?.firstName ||
+              user?.pmiCompanyName ||
+              "PMI Company"}
+            !
           </h1>
           <p className="text-gray-600 mt-1">Loading your applications...</p>
         </div>
@@ -121,7 +173,14 @@ const ClientDashboard = () => {
       <div className="space-y-6">
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900">
-            Welcome back, {user?.pmiCompanyName || "PMI Company"}!
+            Welcome back,{" "}
+            {(user &&
+              (user.fullName ||
+                `${user.firstName || ""} ${user.lastName || ""}`.trim())) ||
+              user?.firstName ||
+              user?.pmiCompanyName ||
+              "PMI Company"}
+            !
           </h1>
           <p className="text-gray-600 mt-1">
             Here's an overview of your mortgage application activities
@@ -162,12 +221,46 @@ const ClientDashboard = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {isNavigating && (
+        <div className="absolute inset-0 z-50 bg-white/60 flex items-center justify-center">
+          <div className="flex flex-col items-center">
+            <svg
+              className="animate-spin h-10 w-10 text-blue-600"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              ></circle>
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+              ></path>
+            </svg>
+            <p className="mt-3 text-sm text-gray-700">Loading...</p>
+          </div>
+        </div>
+      )}
       <div>
         {/* Welcome Section */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-gray-900">
-            Welcome back, {user?.pmiCompanyName || "PMI Company"}!
+            Welcome back,{" "}
+            {(user &&
+              (user.fullName ||
+                `${user.firstName || ""} ${user.lastName || ""}`.trim())) ||
+              user?.firstName ||
+              user?.pmiCompanyName ||
+              "PMI Company"}
+            !
           </h1>
           <p className="text-gray-600 mt-1">
             Here's an overview of your mortgage application activities

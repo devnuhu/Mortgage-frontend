@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 import { useApplication } from "../../context/ApplicationContext";
 import { useAuth } from "../../context/AuthContext";
 import {
@@ -19,6 +21,7 @@ import {
   Loader,
 } from "lucide-react";
 import ApplicationDocuments from "./ApplicationDocuments";
+import ConfirmModal from "../ui/ConfirmModal";
 
 // Step 1: Client Details Component
 const ClientDetailsStep = () => {
@@ -48,20 +51,65 @@ const ClientDetailsStep = () => {
     updateApplicationField,
   ]);
 
+  // Local state to allow free-form typing (commas and decimal point) while
+  // storing a cleaned numeric string in context for validation/submission.
+  const [rawInputs, setRawInputs] = React.useState({});
+  const [focused, setFocused] = React.useState({});
+
   const formatCurrency = (value) => {
-    if (!value) return "";
+    if (value === null || value === undefined || value === "") return "";
+    const cleaned = String(value).replace(/,/g, "");
+    const num = Number(cleaned);
+    if (isNaN(num)) return String(value);
+
+    const hasDecimal = String(value).includes(".");
     return new Intl.NumberFormat("en-NG", {
       style: "currency",
       currency: "NGN",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value);
+      minimumFractionDigits: hasDecimal ? 2 : 0,
+      maximumFractionDigits: 2,
+    }).format(num);
   };
 
-  const handleCurrencyChange = (field, value) => {
-    // Remove currency formatting and keep only numbers
-    const numericValue = value.replace(/[^\d]/g, "");
-    updateApplicationField(field, numericValue);
+  const cleanForStorage = (val) => {
+    if (val === null || val === undefined) return "";
+    let s = String(val).trim();
+    // remove commas and spaces
+    s = s.replace(/[,\s]/g, "");
+    // remove any non-digit except dot
+    s = s.replace(/[^0-9.]/g, "");
+    if (s === "") return "";
+    // Ensure only one dot and up to 2 decimals
+    const parts = s.split(".");
+    const integer = parts.shift();
+    const decimal = parts.join("");
+    const dec2 = decimal ? decimal.slice(0, 2) : null;
+    return dec2 ? `${integer}.${dec2}` : integer;
+  };
+
+  const handleCurrencyInputChange = (field, value) => {
+    // Allow digits, comma, dot while typing
+    const allowed = value.replace(/[^0-9.,]/g, "");
+    setRawInputs((p) => ({ ...p, [field]: allowed }));
+
+    // store cleaned numeric string (no commas) for validation/submission
+    const cleaned = cleanForStorage(allowed);
+    updateApplicationField(field, cleaned);
+  };
+
+  const handleCurrencyFocus = (field) => {
+    setFocused((p) => ({ ...p, [field]: true }));
+    // prefill raw input with current raw value (no commas)
+    setRawInputs((p) => ({ ...p, [field]: currentApplication[field] ?? "" }));
+  };
+
+  const handleCurrencyBlur = (field) => {
+    setFocused((p) => ({ ...p, [field]: false }));
+    setRawInputs((p) => {
+      const next = { ...p };
+      delete next[field];
+      return next;
+    });
   };
 
   return (
@@ -246,12 +294,18 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={
-                currentApplication.equityValue
+                focused.equityValue
+                  ? rawInputs.equityValue ??
+                    currentApplication.equityValue ??
+                    ""
+                  : currentApplication.equityValue
                   ? formatCurrency(currentApplication.equityValue)
                   : ""
               }
+              onFocus={() => handleCurrencyFocus("equityValue")}
+              onBlur={() => handleCurrencyBlur("equityValue")}
               onChange={(e) =>
-                handleCurrencyChange("equityValue", e.target.value)
+                handleCurrencyInputChange("equityValue", e.target.value)
               }
               placeholder="₦0"
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
@@ -275,13 +329,18 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={
-                currentApplication.supplementaryValue !== "" &&
-                currentApplication.supplementaryValue !== null
+                focused.supplementaryValue
+                  ? rawInputs.supplementaryValue ??
+                    currentApplication.supplementaryValue ??
+                    ""
+                  : currentApplication.supplementaryValue
                   ? formatCurrency(currentApplication.supplementaryValue)
                   : ""
               }
+              onFocus={() => handleCurrencyFocus("supplementaryValue")}
+              onBlur={() => handleCurrencyBlur("supplementaryValue")}
               onChange={(e) =>
-                handleCurrencyChange("supplementaryValue", e.target.value)
+                handleCurrencyInputChange("supplementaryValue", e.target.value)
               }
               placeholder="₦0"
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
@@ -308,12 +367,16 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={
-                currentApplication.loanAmount
+                focused.loanAmount
+                  ? rawInputs.loanAmount ?? currentApplication.loanAmount ?? ""
+                  : currentApplication.loanAmount
                   ? formatCurrency(currentApplication.loanAmount)
                   : ""
               }
+              onFocus={() => handleCurrencyFocus("loanAmount")}
+              onBlur={() => handleCurrencyBlur("loanAmount")}
               onChange={(e) =>
-                handleCurrencyChange("loanAmount", e.target.value)
+                handleCurrencyInputChange("loanAmount", e.target.value)
               }
               placeholder="₦0"
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
@@ -337,12 +400,18 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={
-                currentApplication.propertyValue
+                focused.propertyValue
+                  ? rawInputs.propertyValue ??
+                    currentApplication.propertyValue ??
+                    ""
+                  : currentApplication.propertyValue
                   ? formatCurrency(currentApplication.propertyValue)
                   : ""
               }
+              onFocus={() => handleCurrencyFocus("propertyValue")}
+              onBlur={() => handleCurrencyBlur("propertyValue")}
               onChange={(e) =>
-                handleCurrencyChange("propertyValue", e.target.value)
+                handleCurrencyInputChange("propertyValue", e.target.value)
               }
               placeholder="₦0"
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
@@ -425,6 +494,7 @@ const UploadDocumentsStep = () => {
         {currentApplication.backendApplicationId ? (
           <ApplicationDocuments
             applicationId={currentApplication.backendApplicationId}
+            applicationStatus={currentApplication.status}
             defaultDocumentType="identity_document"
             onDocumentCountChange={handleBackendDocumentCountChange} // NEW: Pass the callback
           />
@@ -728,6 +798,7 @@ const SubmitApplicationForm = () => {
     currentStep,
     nextStep,
     previousStep,
+    currentApplication,
     submitApplication,
     resetForm,
     progress,
@@ -737,10 +808,54 @@ const SubmitApplicationForm = () => {
     isLastStep,
     FORM_STEPS,
     TOTAL_STEPS,
+    loadBackendApplication,
   } = useApplication();
+
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [displayStatus, setDisplayStatus] = useState(null);
+
+  // If opened with an applicationId (for edit/resubmit), load it into context
+  useEffect(() => {
+    (async () => {
+      const appId =
+        location?.state?.appId ||
+        new URLSearchParams(location.search).get("appId");
+      if (appId && loadBackendApplication) {
+        const toastId = toast.loading("Loading application...");
+        try {
+          const ok = await loadBackendApplication(appId);
+          toast.dismiss(toastId);
+          if (!ok) {
+            toast.error("Failed to load application");
+            // If loading failed, redirect away
+            navigate("/client/pending-applications");
+          } else {
+            // Clear any previous client-side display status when loading an app
+            setDisplayStatus(null);
+            toast.success("Application loaded", { duration: 1500 });
+          }
+        } catch (err) {
+          console.error("Error loading backend application:", err);
+          toast.dismiss(toastId);
+          toast.error("Failed to load application");
+          navigate("/client/pending-applications");
+        }
+      } else {
+        // No appId provided -> ensure this is a fresh form
+        try {
+          resetForm();
+        } catch (err) {
+          console.warn("Could not reset form on new Submit tab open:", err);
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location?.state, location?.search, loadBackendApplication, resetForm]);
 
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [submissionResult, setSubmissionResult] = useState(null);
+  const [showResubmittedModal, setShowResubmittedModal] = useState(false);
 
   const stepTitles = {
     [FORM_STEPS.CLIENT_DETAILS]: "Client Details",
@@ -760,17 +875,35 @@ const SubmitApplicationForm = () => {
   };
 
   const handleSubmit = async () => {
+    // Capture pre-submit status to determine if this is a resubmission
+    const preStatus = (currentApplication?.status || "").toLowerCase();
     const result = await submitApplication();
     setSubmissionResult(result);
     if (result.success) {
+      // If this was a resubmission of a rejected/returned application,
+      // show a confirmation modal and navigate back to pending list when closed.
+      if (preStatus === "rejected" || preStatus === "returned") {
+        setDisplayStatus("resubmitted");
+        setShowResubmittedModal(true);
+        return;
+      }
+
+      // Regular new submission flow
       setIsSubmitted(true);
     }
+  };
+
+  const handleResubmittedOk = () => {
+    setShowResubmittedModal(false);
+    // Keep application state as-is (do not reset) and navigate back to pending list
+    navigate("/client/pending-applications");
   };
 
   const handleStartNew = () => {
     setIsSubmitted(false);
     setSubmissionResult(null);
     resetForm();
+    setDisplayStatus(null);
   };
 
   // Success Screen
@@ -812,12 +945,32 @@ const SubmitApplicationForm = () => {
 
   return (
     <div className="max-w-4xl mx-auto">
+      {/* Resubmitted confirmation modal */}
+      <ConfirmModal
+        isOpen={showResubmittedModal}
+        title="Application Resubmitted"
+        message="Your application was successfully resubmitted. You will find it in your Pending Applications list."
+        onConfirm={handleResubmittedOk}
+        onCancel={() => {
+          setShowResubmittedModal(false);
+          navigate("/client/pending-applications");
+        }}
+        confirmLabel="OK"
+        cancelLabel="Close"
+      />
       {/* Progress Header */}
       <div className="bg-white rounded-lg border border-gray-200 p-6 mb-6">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-2xl font-bold text-gray-900">
-            Submit Application
-          </h2>
+          <div className="flex items-center space-x-3">
+            <h2 className="text-2xl font-bold text-gray-900">
+              Submit Application
+            </h2>
+            {displayStatus && (
+              <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-blue-50 text-blue-700">
+                {displayStatus === "resubmitted" ? "Resubmitted" : "Submitted"}
+              </span>
+            )}
+          </div>
           <span className="text-sm text-gray-500">
             Step {currentStep} of {TOTAL_STEPS}
           </span>

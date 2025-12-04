@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { isAdmin, isSuperAdmin } from "../../types/auth";
+import toast from "react-hot-toast";
 
 const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
   const { user } = useAuth();
@@ -62,7 +63,7 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
     },
     {
       id: "manage-admins",
-      name: "Manage Admins",
+      name: "Manage Users",
       route: "/admin/manage-admins",
       icon: (
         <svg
@@ -79,7 +80,7 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
           />
         </svg>
       ),
-      description: "Add and manage admin users",
+      description: "Add and manage users",
     },
     {
       id: "submissions",
@@ -147,6 +148,27 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
       ),
       description: "Review and approve applications",
     },
+    {
+      id: "reports",
+      name: "Reports",
+      route: "/admin/reports",
+      icon: (
+        <svg
+          className="h-5 w-5"
+          fill="none"
+          viewBox="0 0 24 24"
+          stroke="currentColor"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"
+          />
+        </svg>
+      ),
+      description: "View analytics and reports",
+    },
   ];
 
   // PMI Client Navigation Items
@@ -195,7 +217,7 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
     },
     {
       id: "pending-applications",
-      name: "Pending Applications",
+      name: "My Applications",
       route: "/client/pending-applications",
       icon: (
         <svg
@@ -293,8 +315,8 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
     if (item.route) {
       navigate(item.route);
     } else {
-      // For routes not implemented yet
-      alert(`Navigation to ${item.name} - Coming in next modules!`);
+      // For routes not implemented yet - show non-blocking toast instead of native alert
+      toast.info(`Navigation to ${item.name} - Coming in next modules!`);
     }
   };
 
@@ -323,7 +345,11 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
           </div>
           <div>
             <h2 className="text-sm font-semibold text-gray-900">
-              {isSuperAdmin(user) ? "PFA Super Admin" : isAdmin(user) ? "PFA Admin" : "PMI Portal"}
+              {isSuperAdmin(user)
+                ? "PFA Super Admin"
+                : isAdmin(user)
+                ? "PFA Admin"
+                : "PMI Portal"}
             </h2>
           </div>
         </div>
@@ -401,16 +427,22 @@ const Sidebar = ({ isMobileOpen, setIsMobileOpen }) => {
         <div className="flex items-center">
           <div
             className="h-8 w-8 rounded-full flex items-center justify-center text-white text-sm font-medium flex-shrink-0"
-            style={{ backgroundColor: isSuperAdmin(user) ? "#1F2937" : isAdmin(user) ? "#EF4444" : "#A8C045" }}
+            style={{
+              backgroundColor: isSuperAdmin(user)
+                ? "#063a82ff"
+                : isAdmin(user)
+                ? "#EF4444"
+                : "#A8C045",
+            }}
           >
             {user?.firstName?.charAt(0)}
             {user?.lastName?.charAt(0)}
           </div>
           <div className="ml-3 min-w-0 flex-1">
-            <p className="text-sm font-medium text-gray-900 truncate">
+            <p className="text-sm font-medium text-gray-600 truncate">
               {user?.firstName} {user?.lastName}
             </p>
-            <p className="text-xs text-gray-500 truncate">
+            <p className="text-xs text-gray-400 truncate">
               {isSuperAdmin(user)
                 ? "PFA Super Admin"
                 : isAdmin(user)

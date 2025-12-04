@@ -82,7 +82,10 @@ export const AuthProvider = ({ children }) => {
       const loginResponse = await loginUser({ email, password });
 
       // DEBUG: dump raw login response to console to diagnose first-login flow
-      if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+      if (
+        typeof window !== "undefined" &&
+        window.location.hostname === "localhost"
+      ) {
         console.log("🔎 raw loginResponse:", loginResponse);
       }
 
@@ -92,26 +95,49 @@ export const AuthProvider = ({ children }) => {
       const detectPasswordChangeFlag = (resp) => {
         if (!resp) return false;
         // Top-level fields
-        if (resp.RequiresPasswordChange === true || resp.requiresPasswordChange === true) return true;
+        if (
+          resp.RequiresPasswordChange === true ||
+          resp.requiresPasswordChange === true
+        )
+          return true;
         // Common wrappers
         const payload = resp.data || resp.result || resp.payload || resp;
         if (!payload) return false;
-        if (payload.RequiresPasswordChange === true || payload.requiresPasswordChange === true) return true;
+        if (
+          payload.RequiresPasswordChange === true ||
+          payload.requiresPasswordChange === true
+        )
+          return true;
         // Some backends indicate via user object flag
-        const userObj = payload.userData || payload.UserData || payload.user || payload.User;
-        if (userObj && (userObj.isFirstLogin === true || userObj.IsFirstLogin === true)) return true;
+        const userObj =
+          payload.userData || payload.UserData || payload.user || payload.User;
+        if (
+          userObj &&
+          (userObj.isFirstLogin === true || userObj.IsFirstLogin === true)
+        )
+          return true;
         return false;
       };
 
-  let needsPasswordChange = detectPasswordChangeFlag(loginResponse);
+      let needsPasswordChange = detectPasswordChangeFlag(loginResponse);
 
       // If we didn't detect it yet, call handleLoginSuccess to normalize payload
       // and use its returned flag as authoritative. This also persists token/user.
-      const { token: newToken, user: newUser, requiresPasswordChange: normalizedFlag } =
-        handleLoginSuccess(loginResponse);
+      const {
+        token: newToken,
+        user: newUser,
+        requiresPasswordChange: normalizedFlag,
+      } = handleLoginSuccess(loginResponse);
 
-      if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-        console.log("🔎 normalized login result:", { newToken, newUser, normalizedFlag });
+      if (
+        typeof window !== "undefined" &&
+        window.location.hostname === "localhost"
+      ) {
+        console.log("🔎 normalized login result:", {
+          newToken,
+          newUser,
+          normalizedFlag,
+        });
       }
 
       // Prefer normalizedFlag if present
@@ -136,9 +162,9 @@ export const AuthProvider = ({ children }) => {
       // Normal login flow (no password change required)
       // token/newUser already obtained from handleLoginSuccess above
 
-  setToken(newToken);
-  setUser(newUser);
-  setRequiresPasswordChange(false);
+      setToken(newToken);
+      setUser(newUser);
+      setRequiresPasswordChange(false);
 
       if (
         typeof window !== "undefined" &&

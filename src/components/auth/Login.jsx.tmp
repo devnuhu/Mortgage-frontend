@@ -1,0 +1,266 @@
+import React, { useState, useEffect } from "react";
+import { useAuth } from "../../context/AuthContext";
+import { useNavigate, useLocation } from "react-router-dom";
+import logo from "../../assets/Logo.png";
+import whiteLogo from "../../assets/WhiteLogo.png";
+import mmgtBg from "../../assets/mmgtBg.jpg";
+
+const Login = () => {
+  const [formData, setFormData] = useState({ email: "", password: "" });
+  const [errors, setErrors] = useState({});
+  const [showPassword, setShowPassword] = useState(false);
+
+  const { login, isLoading, user } = useAuth();
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (user) {
+      const redirectTo = location.state?.from?.pathname || "/dashboard";
+      navigate(redirectTo, { replace: true });
+    }
+  }, [user, navigate, location]);
+
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+
+    if (errors[name]) {
+      setErrors((prev) => ({ ...prev, [name]: "" }));
+    }
+  };
+
+  const validateForm = () => {
+    const newErrors = {};
+    if (!formData.email) {
+      newErrors.email = "Email is required";
+    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
+      newErrors.email = "Please enter a valid email";
+    }
+
+    if (!formData.password) {
+      newErrors.password = "Password is required";
+    } else if (formData.password.length < 6) {
+      newErrors.password = "Password must be at least 6 characters";
+    }
+
+    setErrors(newErrors);
+    return Object.keys(newErrors).length === 0;
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+
+    try {
+      await login(formData.email, formData.password);
+      setErrors({});
+    } catch (error) {
+      let errorMessage = error.message;
+
+      if (
+        errorMessage.toLowerCase().includes("invalid credentials") ||
+        errorMessage.toLowerCase().includes("invalid email or password")
+      ) {
+        errorMessage =
+          "Invalid email or password. Please check your credentials.";
+      } else if (
+        errorMessage.toLowerCase().includes("account locked") ||
+        errorMessage.toLowerCase().includes("account disabled")
+      ) {
+        errorMessage =
+          "Your account has been locked or disabled. Please contact support.";
+      } else if (errorMessage.toLowerCase().includes("network")) {
+        errorMessage = "Network error. Please try again.";
+      }
+
+      setErrors({ submit: errorMessage });
+    }
+  };
+
+  const handleForgotPassword = () => {
+    alert("Forgot password functionality will be implemented soon.");
+  };
+
+  return (
+    <div className="min-h-screen flex">
+      {/* Left Section - App Info */}
+      <div className="hidden lg:flex lg:w-1/2 relative bg-[#A8C045] text-white">
+        <div className="absolute inset-0">
+          <img 
+            src={mmgtBg} 
+            alt="Background" 
+            className="w-full h-full object-cover mix-blend-overlay opacity-20"
+          />
+        </div>
+        <div className="relative z-10 flex flex-col justify-center px-12 w-full">
+          <img 
+            src={whiteLogo} 
+            alt="White Logo" 
+            className="w-32 h-auto mb-8"
+          />
+          <h1 className="text-4xl font-bold mb-4">
+            Mortgage Management System
+          </h1>
+          <p className="text-xl opacity-90">
+            Streamline your mortgage processes with our comprehensive management platform
+          </p>
+        </div>
+      </div>
+
+      {/* Right Section - Login Form */}
+      <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-gray-50">
+        <div className="w-full max-w-md space-y-6">
+          {/* Mobile Logo - Only visible on mobile */}
+          <div className="text-center lg:hidden">
+            <img src={logo} alt="Logo" className="mx-auto h-20 w-auto mb-4" />
+            <h2 className="text-2xl font-bold text-gray-900">Mortgage Manager</h2>
+            <p className="mt-1 text-sm text-gray-500">Sign in to your account</p>
+          </div>
+          
+          {/* Desktop Header - Only visible on desktop */}
+          <div className="hidden lg:block">
+            <h2 className="text-2xl font-bold text-gray-900">Welcome Back</h2>
+            <p className="mt-1 text-sm text-gray-500">Please sign in to your account</p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
+            {/* Email */}
+            <div>
+              <label
+                htmlFor="email"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Email Address
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                value={formData.email}
+                onChange={handleChange}
+                className={`w-full rounded-lg border px-3 py-2 text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 ${
+                  errors.email
+                    ? "border-red-400 focus:ring-red-400"
+                    : "border-gray-300 focus:ring-[#A8C045]"
+                }`}
+                placeholder="you@example.com"
+              />
+              {errors.email && (
+                <p className="mt-1 text-xs text-red-500">{errors.email}</p>
+              )}
+            </div>
+
+            {/* Password */}
+            <div>
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-gray-700 mb-1"
+              >
+                Password
+              </label>
+              <div className="relative">
+                <input
+                  id="password"
+                  name="password"
+                  type={showPassword ? "text" : "password"}
+                  value={formData.password}
+                  onChange={handleChange}
+                  className={`w-full rounded-lg border px-3 py-2 pr-10 text-gray-900 placeholder-gray-400 shadow-sm focus:outline-none focus:ring-2 ${
+                    errors.password
+                      ? "border-red-400 focus:ring-red-400"
+                      : "border-gray-300 focus:ring-[#A8C045]"
+                  }`}
+                  placeholder="••••••••"
+                />
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-400 hover:text-gray-600"
+                >
+                  {showPassword ? "🙈" : "👁️"}
+                </button>
+              </div>
+              {errors.password && (
+                <p className="mt-1 text-xs text-red-500">{errors.password}</p>
+              )}
+            </div>
+
+            {/* Forgot Password */}
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={handleForgotPassword}
+                className="text-sm text-[#A8C045] hover:underline"
+              >
+                Forgot password?
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {errors.submit && (
+              <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-600">
+                {errors.submit}
+              </div>
+            )}
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full flex justify-center items-center rounded-lg bg-[#A8C045] px-4 py-2 text-white font-medium shadow-md hover:bg-[#9BB83C] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#A8C045] transition disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? (
+                <svg
+                  className="animate-spin h-5 w-5 text-white"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  ></circle>
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  ></path>
+                </svg>
+              ) : (
+                "Sign In"
+              )}
+            </button>
+          </form>
+
+          {/* Demo Credentials (Dev Only) */}
+          {process.env.NODE_ENV === "development" && (
+            <div className="mt-6 rounded-lg bg-gray-50 border border-gray-200 p-4 text-sm">
+              <p className="font-semibold text-gray-700 mb-2">
+                Demo Credentials:
+              </p>
+              <ul className="space-y-1 text-gray-600 text-xs">
+                <li>
+                  <strong>Super Admin:</strong> superadmin@mmgt.com / password123
+                </li>
+                <li>
+                  <strong>Admin:</strong> admin@mmgt.com / password123
+                </li>
+                <li>
+                  <strong>User:</strong> user@mmgt.com / password123
+                </li>
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default Login;

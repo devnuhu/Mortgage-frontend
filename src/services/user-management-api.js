@@ -168,11 +168,28 @@ export const deleteUser = async (userId) => {
       throw new Error("User ID is required");
     }
 
+    console.log(`🗑️ Deleting user ${userId} -> DELETE /Users/${userId}`);
     const response = await api.delete(`/Users/${userId}`);
+    console.log(
+      `✅ Delete user ${userId} response:`,
+      response.status,
+      response.data
+    );
     return response.data;
   } catch (error) {
-    console.error(`❌ Delete user ${userId} error:`, error);
-    throw error;
+    // Surface useful server messages
+    console.error(`❌ Delete user ${userId} error:`, {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+
+    // Build a helpful error for the UI
+    const serverMsg =
+      error.response?.data?.message || error.response?.data || error.message;
+    const err = new Error(serverMsg);
+    err.response = error.response;
+    throw err;
   }
 };
 

@@ -22,6 +22,8 @@ import PendingApplications from "./components/client/PendingApplications";
 import ManagePMI from "./components/admin/ManagePMI";
 import AdminApplicationManagement from "./components/admin/AdminApplicationManagement";
 import AdminUsers from "./components/admin/AdminUsers";
+import Reports from "./components/admin/Reports";
+import ReturnedDocs from "./components/client/ReturnedDocs";
 
 // Import services for AdminDashboard
 import { usePMI } from "./context/PMIContext";
@@ -549,32 +551,7 @@ const PostApproval = () => (
   </div>
 );
 
-const ReturnedDocs = () => (
-  <div className="bg-white rounded-lg shadow p-8 text-center">
-    <div className="mx-auto w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mb-4">
-      <svg
-        className="w-8 h-8 text-yellow-600"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth="2"
-          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"
-        />
-      </svg>
-    </div>
-    <h2 className="text-2xl font-bold text-gray-900 mb-2">
-      Returned Documents
-    </h2>
-    <p className="text-gray-600 mb-4">This feature is coming soon!</p>
-    <p className="text-sm text-gray-500">
-      Handle applications with documentation issues.
-    </p>
-  </div>
-);
+// `ReturnedDocs` page component moved to its own file: `src/components/client/ReturnedDocs.jsx`
 
 const ClientProfile = () => (
   <div className="bg-white rounded-lg shadow p-8 text-center">
@@ -775,6 +752,20 @@ const AppRoutes = () => {
         }
       />
 
+      {/* Admin Reports */}
+      <Route
+        path="/admin/reports"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.ADMIN, UserRole.SUPER_ADMIN]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <Reports />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
       {/* Client Dashboard with ApplicationProvider */}
       <Route
         path="/client"
@@ -877,8 +868,20 @@ const AppRoutes = () => {
   );
 };
 
-// Main App component with Global Toast Provider
+// Main App component with Global Toast Provider and global API activity spinner
 const App = () => {
+  const [apiRequests, setApiRequests] = React.useState(0);
+
+  React.useEffect(() => {
+    const handler = (e) => {
+      const count = e?.detail?.count ?? 0;
+      setApiRequests(count);
+    };
+
+    window.addEventListener("api-activity", handler);
+    return () => window.removeEventListener("api-activity", handler);
+  }, []);
+
   return (
     <AuthProvider>
       <Router>
@@ -926,6 +929,35 @@ const App = () => {
             },
           }}
         />
+
+        {/* Global API spinner overlay (shows while any API requests are outstanding) */}
+        {apiRequests > 0 && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-30">
+            <div className="bg-white rounded-lg px-5 py-4 flex items-center space-x-3 shadow">
+              <svg
+                className="animate-spin h-6 w-6 text-[#A8C045]"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                ></circle>
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+                ></path>
+              </svg>
+              <span className="text-sm text-gray-800">Loading…</span>
+            </div>
+          </div>
+        )}
       </Router>
     </AuthProvider>
   );

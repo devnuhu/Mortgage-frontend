@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import toast from "react-hot-toast";
 import { usePMI } from "../../context/PMIContext";
 import { PMIStatus, getStatusColor, formatDate } from "../../types/pmi";
 
@@ -38,7 +39,7 @@ const PMITable = ({ onEditPMI, onAddPMI }) => {
     setActionLoading(pmiId);
     const result = await resetTempPassword(pmiId);
     if (result.success) {
-      alert(`New temporary password: ${result.tempPassword}`);
+      toast.success(`New temporary password: ${result.tempPassword}`);
     }
     setActionLoading(null);
   };

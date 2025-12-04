@@ -31,6 +31,7 @@ import {
   Loader2,
 } from "lucide-react";
 import toast, { Toaster } from "react-hot-toast";
+import ConfirmModal from "../ui/ConfirmModal";
 
 // Import API functions
 import {
@@ -42,6 +43,7 @@ import {
   formatDate,
   getApplicationById,
 } from "../../services/applicationService"; // Adjust path as needed
+import { getApplicationReviewHistory } from "../../services/application-api";
 
 const AdminApplicationManagement = () => {
   const [applications, setApplications] = useState([]);
@@ -74,10 +76,18 @@ const AdminApplicationManagement = () => {
   // Documents for selected application
   const [applicationDocuments, setApplicationDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
+  // Review history for selected applications (cached by applicationId)
+  const [reviewHistoryMap, setReviewHistoryMap] = useState({});
+  const [reviewHistoryLoading, setReviewHistoryLoading] = useState({});
 
   // Auto-refresh state
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(new Date());
+
+  // Confirmation modal state
+  const [showConfirmModal, setShowConfirmModal] = useState(false);
+  const [confirmAction, setConfirmAction] = useState(null);
+  const [confirmData, setConfirmData] = useState(null);
 
   // Status configuration - updated to match backend statuses
   const statusConfig = {
@@ -116,6 +126,13 @@ const AdminApplicationManagement = () => {
       icon: XCircle,
       badge: "bg-red-500",
     },
+    returned: {
+      label: "Returned",
+      color: "text-orange-700",
+      bg: "bg-orange-100",
+      icon: XCircle,
+      badge: "bg-orange-500",
+    },
     pending: {
       label: "Pending",
       color: "text-yellow-700",
@@ -124,6 +141,9 @@ const AdminApplicationManagement = () => {
       badge: "bg-yellow-500",
     },
   };
+
+  // Normalize status keys to avoid case/whitespace mismatches
+  const normalizeStatus = (s) => (s || "").toLowerCase().trim();
 
   // Map backend data to frontend format
   const mapApplicationData = (backendApp) => {
@@ -146,7 +166,12 @@ const AdminApplicationManagement = () => {
       propertyValue: backendApp.propertyValue,
       submissionDate: backendApp.submittedAt || backendApp.createdAt,
       lastUpdated: backendApp.updatedAt,
-      status: backendApp.status.toLowerCase(),
+      status: (function (s) {
+        if (!s) return s;
+        const v = String(s).toLowerCase().trim();
+        if (v === "resubmitted") return "returned";
+        return v;
+      })(backendApp.status),
       documents: [], // Will be populated when needed
       documentCount: backendApp.documentCount || 0,
       rejectionReason: null, // Will be handled through comments
@@ -211,6 +236,32 @@ const AdminApplicationManagement = () => {
       setDocumentsLoading(false);
     }
   }, []);
+
+  // Load review history for a specific application (cached)
+  const loadReviewHistory = useCallback(
+    async (applicationId) => {
+      if (!applicationId) return;
+      if (reviewHistoryMap[applicationId]) return; // already loaded
+
+      try {
+        setReviewHistoryLoading((prev) => ({ ...prev, [applicationId]: true }));
+        const history = await getApplicationReviewHistory(applicationId);
+        setReviewHistoryMap((prev) => ({
+          ...prev,
+          [applicationId]: history || [],
+        }));
+      } catch (err) {
+        console.warn("No review history available for app", applicationId, err);
+        setReviewHistoryMap((prev) => ({ ...prev, [applicationId]: [] }));
+      } finally {
+        setReviewHistoryLoading((prev) => ({
+          ...prev,
+          [applicationId]: false,
+        }));
+      }
+    },
+    [reviewHistoryMap]
+  );
 
   // Initial load
   useEffect(() => {
@@ -388,6 +439,32 @@ const AdminApplicationManagement = () => {
     await loadApplications(true);
   }, [loadApplications]);
 
+  // Show confirmation before status update
+  const confirmStatusUpdate = () => {
+    if (!selectedApplication || !newStatus) return;
+
+    const statusLabel = (
+      statusConfig[normalizeStatus(newStatus)]?.label || newStatus
+    )
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (l) => l.toUpperCase());
+
+    const message =
+      newStatus === "rejected"
+        ? `Are you sure you want to reject this application?${
+            rejectionReason ? ` Reason: ${rejectionReason}` : ""
+          }`
+        : `Are you sure you want to change the status to "${statusLabel}"?`;
+
+    setConfirmData({
+      appNumber: selectedApplication.applicationNumber,
+      newStatus,
+      rejectionReason,
+    });
+    setConfirmAction("updateStatus");
+    setShowConfirmModal(true);
+  };
+
   // Handle status update
   const handleStatusUpdate = async () => {
     if (!selectedApplication || !newStatus) return;
@@ -473,7 +550,11 @@ const AdminApplicationManagement = () => {
 
     // Load documents for this application
     if (application.applicationId) {
-      await loadApplicationDocuments(application.applicationId);
+      // load documents and review history in parallel
+      await Promise.all([
+        loadApplicationDocuments(application.applicationId),
+        loadReviewHistory(application.applicationId),
+      ]);
     }
   };
 
@@ -1080,20 +1161,21 @@ const AdminApplicationManagement = () => {
                         </h3>
                         <span
                           className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            statusConfig[application.status]?.bg ||
-                            statusConfig.pending.bg
+                            statusConfig[normalizeStatus(application.status)]
+                              ?.bg || statusConfig.pending.bg
                           } ${
-                            statusConfig[application.status]?.color ||
-                            statusConfig.pending.color
+                            statusConfig[normalizeStatus(application.status)]
+                              ?.color || statusConfig.pending.color
                           }`}
                         >
                           <span
                             className={`w-2 h-2 rounded-full ${
-                              statusConfig[application.status]?.badge ||
-                              statusConfig.pending.badge
+                              statusConfig[normalizeStatus(application.status)]
+                                ?.badge || statusConfig.pending.badge
                             } mr-1`}
                           ></span>
-                          {statusConfig[application.status]?.label || "Unknown"}
+                          {statusConfig[normalizeStatus(application.status)]
+                            ?.label || "Unknown"}
                         </span>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-sm text-gray-600">
@@ -1207,27 +1289,29 @@ const AdminApplicationManagement = () => {
                   )}
                 </div>
 
-                <div className="flex flex-col space-y-2 ml-6">
-                  <button
-                    onClick={() => handleViewDetails(application)}
-                    className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors whitespace-nowrap"
-                  >
-                    <Eye className="w-4 h-4 mr-2" />
-                    View Details
-                  </button>
-                  <button
-                    onClick={() => {
-                      setSelectedApplication(application);
-                      setNewStatus(application.status);
-                      setShowStatusModal(true);
-                    }}
-                    className="flex items-center px-4 py-2 text-white rounded-lg hover:opacity-90 transition-colors whitespace-nowrap"
-                    style={{ backgroundColor: "#A8C045" }}
-                  >
-                    <Settings className="w-4 h-4 mr-2" />
-                    Update Status
-                  </button>
-                </div>
+                {application.status !== "draft" && (
+                  <div className="flex flex-col space-y-2 ml-6">
+                    <button
+                      onClick={() => handleViewDetails(application)}
+                      className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors whitespace-nowrap"
+                    >
+                      <Eye className="w-4 h-4 mr-2" />
+                      View Details
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSelectedApplication(application);
+                        setNewStatus(application.status);
+                        setShowStatusModal(true);
+                      }}
+                      className="flex items-center px-4 py-2 text-white rounded-lg hover:opacity-90 transition-colors whitespace-nowrap"
+                      style={{ backgroundColor: "#A8C045" }}
+                    >
+                      <Settings className="w-4 h-4 mr-2" />
+                      Update Status
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -1237,8 +1321,8 @@ const AdminApplicationManagement = () => {
       {/* Enhanced Application Details Modal */}
       {showDetailsModal && selectedApplication && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] overflow-y-auto">
-            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 rounded-t-lg">
+          <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex-shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-4">
                   <h2 className="text-xl font-bold text-gray-900">
@@ -1246,19 +1330,20 @@ const AdminApplicationManagement = () => {
                   </h2>
                   <span
                     className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${
-                      statusConfig[selectedApplication.status]?.bg ||
-                      statusConfig.pending.bg
+                      statusConfig[normalizeStatus(selectedApplication.status)]
+                        ?.bg || statusConfig.pending.bg
                     } ${
-                      statusConfig[selectedApplication.status]?.color ||
-                      statusConfig.pending.color
+                      statusConfig[normalizeStatus(selectedApplication.status)]
+                        ?.color || statusConfig.pending.color
                     }`}
                   >
                     {React.createElement(
-                      statusConfig[selectedApplication.status]?.icon || Clock,
+                      statusConfig[normalizeStatus(selectedApplication.status)]
+                        ?.icon || Clock,
                       { className: "w-4 h-4 mr-2" }
                     )}
-                    {statusConfig[selectedApplication.status]?.label ||
-                      "Unknown"}
+                    {statusConfig[normalizeStatus(selectedApplication.status)]
+                      ?.label || "Unknown"}
                   </span>
                 </div>
                 <button
@@ -1270,209 +1355,271 @@ const AdminApplicationManagement = () => {
               </div>
             </div>
 
-            <div className="p-6">
-              {/* Quick Stats Bar */}
-              <div className="grid grid-cols-4 gap-4 mb-8 p-4 bg-gray-50 rounded-lg">
-                <div className="text-center">
-                  <p className="text-sm text-gray-500">Loan Amount</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    {formatCurrency(selectedApplication.loanAmount)}
-                  </p>
-                </div>
-                <div className="text-center">
-                  <p className="text-sm text-gray-500">Property Value</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    {formatCurrency(selectedApplication.propertyValue)}
-                  </p>
-                </div>
-                <div className="text-center">
-                  <p className="text-sm text-gray-500">LTV Ratio</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    {(
-                      (selectedApplication.loanAmount /
-                        selectedApplication.propertyValue) *
-                      100
-                    ).toFixed(1)}
-                    %
-                  </p>
-                </div>
-                <div className="text-center">
-                  <p className="text-sm text-gray-500">Days Since Submission</p>
-                  <p className="text-lg font-bold text-gray-900">
-                    {Math.floor(
-                      (new Date() -
-                        new Date(selectedApplication.submissionDate)) /
-                        (1000 * 60 * 60 * 24)
-                    )}
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Borrower Information */}
-                <div className="space-y-6">
-                  <div className="flex items-center mb-4">
-                    <User className="w-5 h-5 text-gray-400 mr-2" />
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Borrower Information
-                    </h3>
+            <div className="overflow-y-auto flex-1 min-h-0">
+              <div className="p-6">
+                {/* Quick Stats Bar */}
+                <div className="grid grid-cols-4 gap-4 mb-8 p-4 bg-gray-50 rounded-lg">
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Loan Amount</p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {formatCurrency(selectedApplication.loanAmount)}
+                    </p>
                   </div>
-
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm text-gray-500">Application ID</p>
-                        <p className="font-medium">{selectedApplication.id}</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">RSA PIN</p>
-                        <p className="font-medium font-mono">
-                          {selectedApplication.rsaPin}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">First Name</p>
-                        <p className="font-medium">
-                          {selectedApplication.firstName}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Middle Name</p>
-                        <p className="font-medium">
-                          {selectedApplication.middleName || "N/A"}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Last Name</p>
-                        <p className="font-medium">
-                          {selectedApplication.lastName}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Full Name</p>
-                        <p className="font-medium">
-                          {selectedApplication.borrowerName}
-                        </p>
-                      </div>
-                    </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Property Value</p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {formatCurrency(selectedApplication.propertyValue)}
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">LTV Ratio</p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {(
+                        (selectedApplication.loanAmount /
+                          selectedApplication.propertyValue) *
+                        100
+                      ).toFixed(1)}
+                      %
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">
+                      Days Since Submission
+                    </p>
+                    <p className="text-lg font-bold text-gray-900">
+                      {Math.floor(
+                        (new Date() -
+                          new Date(selectedApplication.submissionDate)) /
+                          (1000 * 60 * 60 * 24)
+                      )}
+                    </p>
                   </div>
                 </div>
 
-                {/* PMI Information */}
-                <div className="space-y-6">
-                  <div className="flex items-center mb-4">
-                    <Building className="w-5 h-5 text-gray-400 mr-2" />
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      PMI Company Information
-                    </h3>
-                  </div>
-
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="grid grid-cols-1 gap-4">
-                      <div>
-                        <p className="text-sm text-gray-500">PMI Company</p>
-                        <p className="font-medium">
-                          {selectedApplication.pmiCompany}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">
-                          Representative Name
-                        </p>
-                        <p className="font-medium">
-                          {selectedApplication.pmiRepName}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">
-                          Representative Email
-                        </p>
-                        <p className="font-medium text-blue-600">
-                          {selectedApplication.pmiRepEmail}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Financial Information */}
-                <div className="space-y-6">
-                  <div className="flex items-center mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">
-                      Financial Details
-                    </h3>
-                  </div>
-
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <p className="text-sm text-gray-500">Loan Amount</p>
-                        <p className="font-medium text-lg text-green-600">
-                          {formatCurrency(selectedApplication.loanAmount)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Property Value</p>
-                        <p className="font-medium text-lg text-blue-600">
-                          {formatCurrency(selectedApplication.propertyValue)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Equity Value</p>
-                        <p className="font-medium">
-                          {formatCurrency(selectedApplication.equityValue)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">
-                          Supplementary Value
-                        </p>
-                        <p className="font-medium">
-                          {formatCurrency(
-                            selectedApplication.supplementaryValue
-                          )}
-                        </p>
-                      </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                  {/* Borrower Information */}
+                  <div className="space-y-6">
+                    <div className="flex items-center mb-4">
+                      <User className="w-5 h-5 text-gray-400 mr-2" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Borrower Information
+                      </h3>
                     </div>
 
-                    {/* Financial Ratios */}
-                    <div className="mt-4 pt-4 border-t border-gray-200">
+                    <div className="bg-gray-50 rounded-lg p-4">
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <p className="text-sm text-gray-500">
-                            Loan-to-Value Ratio
+                            Application ID
                           </p>
-                          <p className="font-bold text-lg">
-                            {(
-                              (selectedApplication.loanAmount /
-                                selectedApplication.propertyValue) *
-                              100
-                            ).toFixed(1)}
-                            %
+                          <p className="font-medium">
+                            {selectedApplication.id}
                           </p>
-                          <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
-                            <div
-                              className="bg-[#A8C045] h-2 rounded-full"
-                              style={{
-                                width: `${Math.min(
-                                  (selectedApplication.loanAmount /
-                                    selectedApplication.propertyValue) *
-                                    100,
-                                  100
-                                )}%`,
-                              }}
-                            ></div>
-                          </div>
                         </div>
                         <div>
-                          <p className="text-sm text-gray-500">Equity Ratio</p>
-                          <p className="font-bold text-lg">
-                            {(
-                              (selectedApplication.equityValue /
-                                selectedApplication.loanAmount) *
-                              100
-                            ).toFixed(1)}
-                            %
+                          <p className="text-sm text-gray-500">RSA PIN</p>
+                          <p className="font-medium font-mono">
+                            {selectedApplication.rsaPin}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">First Name</p>
+                          <p className="font-medium">
+                            {selectedApplication.firstName}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Middle Name</p>
+                          <p className="font-medium">
+                            {selectedApplication.middleName || "N/A"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Last Name</p>
+                          <p className="font-medium">
+                            {selectedApplication.lastName}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Full Name</p>
+                          <p className="font-medium">
+                            {selectedApplication.borrowerName}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* PMI Information */}
+                  <div className="space-y-6">
+                    <div className="flex items-center mb-4">
+                      <Building className="w-5 h-5 text-gray-400 mr-2" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        PMI Company Information
+                      </h3>
+                    </div>
+
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-500">PMI Company</p>
+                          <p className="font-medium">
+                            {selectedApplication.pmiCompany}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">
+                            Representative Name
+                          </p>
+                          <p className="font-medium">
+                            {selectedApplication.pmiRepName}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">
+                            Representative Email
+                          </p>
+                          <p className="font-medium text-blue-600">
+                            {selectedApplication.pmiRepEmail}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Financial Information */}
+                  <div className="space-y-6">
+                    <div className="flex items-center mb-4">
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Financial Details
+                      </h3>
+                    </div>
+
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-500">Loan Amount</p>
+                          <p className="font-medium text-lg text-green-600">
+                            {formatCurrency(selectedApplication.loanAmount)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">
+                            Property Value
+                          </p>
+                          <p className="font-medium text-lg text-blue-600">
+                            {formatCurrency(selectedApplication.propertyValue)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">Equity Value</p>
+                          <p className="font-medium">
+                            {formatCurrency(selectedApplication.equityValue)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">
+                            Supplementary Value
+                          </p>
+                          <p className="font-medium">
+                            {formatCurrency(
+                              selectedApplication.supplementaryValue
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Financial Ratios */}
+                      <div className="mt-4 pt-4 border-t border-gray-200">
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <p className="text-sm text-gray-500">
+                              Loan-to-Value Ratio
+                            </p>
+                            <p className="font-bold text-lg">
+                              {(
+                                (selectedApplication.loanAmount /
+                                  selectedApplication.propertyValue) *
+                                100
+                              ).toFixed(1)}
+                              %
+                            </p>
+                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                              <div
+                                className="bg-[#A8C045] h-2 rounded-full"
+                                style={{
+                                  width: `${Math.min(
+                                    (selectedApplication.loanAmount /
+                                      selectedApplication.propertyValue) *
+                                      100,
+                                    100
+                                  )}%`,
+                                }}
+                              ></div>
+                            </div>
+                          </div>
+                          <div>
+                            <p className="text-sm text-gray-500">
+                              Equity Ratio
+                            </p>
+                            <p className="font-bold text-lg">
+                              {(
+                                (selectedApplication.equityValue /
+                                  selectedApplication.loanAmount) *
+                                100
+                              ).toFixed(1)}
+                              %
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Timeline Information */}
+                  <div className="space-y-6">
+                    <div className="flex items-center mb-4">
+                      <Calendar className="w-5 h-5 text-gray-400 mr-2" />
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Timeline & Status
+                      </h3>
+                    </div>
+
+                    <div className="bg-gray-50 rounded-lg p-4">
+                      <div className="grid grid-cols-1 gap-4">
+                        <div>
+                          <p className="text-sm text-gray-500">Created Date</p>
+                          <p className="font-medium">
+                            {formatDate(selectedApplication.createdAt)}
+                          </p>
+                        </div>
+                        {selectedApplication.submittedAt && (
+                          <div>
+                            <p className="text-sm text-gray-500">
+                              Submission Date
+                            </p>
+                            <p className="font-medium">
+                              {formatDate(selectedApplication.submittedAt)}
+                            </p>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-sm text-gray-500">Last Updated</p>
+                          <p className="font-medium">
+                            {formatDate(selectedApplication.lastUpdated)}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-500">
+                            Processing Time
+                          </p>
+                          <p className="font-medium">
+                            {Math.floor(
+                              (new Date() -
+                                new Date(selectedApplication.submissionDate)) /
+                                (1000 * 60 * 60 * 24)
+                            )}{" "}
+                            days
                           </p>
                         </div>
                       </div>
@@ -1480,130 +1627,159 @@ const AdminApplicationManagement = () => {
                   </div>
                 </div>
 
-                {/* Timeline Information */}
-                <div className="space-y-6">
-                  <div className="flex items-center mb-4">
-                    <Calendar className="w-5 h-5 text-gray-400 mr-2" />
+                {/* Review History Section */}
+                <div className="mt-8">
+                  <div className="flex items-center mb-6">
+                    <Clock className="w-5 h-5 text-gray-400 mr-2" />
                     <h3 className="text-lg font-semibold text-gray-900">
-                      Timeline & Status
+                      Review History
                     </h3>
                   </div>
 
-                  <div className="bg-gray-50 rounded-lg p-4">
-                    <div className="grid grid-cols-1 gap-4">
-                      <div>
-                        <p className="text-sm text-gray-500">Created Date</p>
-                        <p className="font-medium">
-                          {formatDate(selectedApplication.createdAt)}
-                        </p>
-                      </div>
-                      {selectedApplication.submittedAt && (
-                        <div>
-                          <p className="text-sm text-gray-500">
-                            Submission Date
-                          </p>
-                          <p className="font-medium">
-                            {formatDate(selectedApplication.submittedAt)}
-                          </p>
-                        </div>
-                      )}
-                      <div>
-                        <p className="text-sm text-gray-500">Last Updated</p>
-                        <p className="font-medium">
-                          {formatDate(selectedApplication.lastUpdated)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Processing Time</p>
-                        <p className="font-medium">
-                          {Math.floor(
-                            (new Date() -
-                              new Date(selectedApplication.submissionDate)) /
-                              (1000 * 60 * 60 * 24)
-                          )}{" "}
-                          days
-                        </p>
-                      </div>
+                  {reviewHistoryLoading[selectedApplication.applicationId] ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin text-[#A8C045] mr-2" />
+                      <span className="text-gray-600">
+                        Loading review history...
+                      </span>
                     </div>
-                  </div>
+                  ) : (
+                      reviewHistoryMap[selectedApplication.applicationId] || []
+                    ).length > 0 ? (
+                    <div className="space-y-4">
+                      {(
+                        reviewHistoryMap[selectedApplication.applicationId] ||
+                        []
+                      ).map((review) => (
+                        <div
+                          key={review.id || review.createdAt}
+                          className="border border-gray-200 rounded-lg p-4 bg-gray-50"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="flex items-center space-x-2">
+                              <span
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                  statusConfig[normalizeStatus(review.status)]
+                                    ?.bg || statusConfig.pending.bg
+                                } ${
+                                  statusConfig[normalizeStatus(review.status)]
+                                    ?.color || statusConfig.pending.color
+                                }`}
+                              >
+                                <span
+                                  className={`w-2 h-2 rounded-full ${
+                                    statusConfig[normalizeStatus(review.status)]
+                                      ?.badge || statusConfig.pending.badge
+                                  } mr-1`}
+                                ></span>
+                                {statusConfig[normalizeStatus(review.status)]
+                                  ?.label || review.status}
+                              </span>
+                              <span className="text-sm text-gray-500">
+                                by{" "}
+                                {review.reviewedByName ||
+                                  review.performedByName ||
+                                  "-"}
+                              </span>
+                            </div>
+                            <span className="text-sm text-gray-500">
+                              {formatDate(review.createdAt)}
+                            </span>
+                          </div>
+                          {review.comments && (
+                            <div className="mt-2">
+                              <p className="text-sm text-gray-700 bg-white p-3 rounded border">
+                                {review.comments}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <Clock className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+                      <p>No review history available</p>
+                    </div>
+                  )}
                 </div>
-              </div>
 
-              {/* Documents Section */}
-              <div className="mt-8">
-                <div className="flex items-center mb-6">
-                  <FileText className="w-5 h-5 text-gray-400 mr-2" />
-                  <h3 className="text-lg font-semibold text-gray-900">
-                    Uploaded Documents
-                  </h3>
-                  <span className="ml-2 bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">
-                    {documentsLoading
-                      ? "Loading..."
-                      : `${applicationDocuments.length} files`}
-                  </span>
-                </div>
-
-                {documentsLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <Loader2 className="w-6 h-6 animate-spin text-[#A8C045]" />
-                    <span className="ml-2 text-gray-600">
-                      Loading documents...
+                {/* Documents Section */}
+                <div className="mt-8">
+                  <div className="flex items-center mb-6">
+                    <FileText className="w-5 h-5 text-gray-400 mr-2" />
+                    <h3 className="text-lg font-semibold text-gray-900">
+                      Uploaded Documents
+                    </h3>
+                    <span className="ml-2 bg-gray-100 text-gray-600 px-2 py-1 rounded-full text-xs">
+                      {documentsLoading
+                        ? "Loading..."
+                        : `${applicationDocuments.length} files`}
                     </span>
                   </div>
-                ) : applicationDocuments.length > 0 ? (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {applicationDocuments.map((doc, index) => (
-                      <div
-                        key={doc.id || index}
-                        className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                            <div className="flex-shrink-0">
-                              <FileText className="w-8 h-8 text-red-500" />
-                            </div>
-                            <div>
-                              <p className="font-medium text-gray-900">
-                                {doc.name}
-                              </p>
-                              <p className="text-sm text-gray-500">
-                                {doc.type}
-                              </p>
-                              <p className="text-xs text-gray-400">
-                                {doc.size}
-                              </p>
-                              {doc.uploadedAt && (
-                                <p className="text-xs text-gray-400">
-                                  Uploaded: {formatDate(doc.uploadedAt)}
+
+                  {documentsLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin text-[#A8C045]" />
+                      <span className="ml-2 text-gray-600">
+                        Loading documents...
+                      </span>
+                    </div>
+                  ) : applicationDocuments.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {applicationDocuments.map((doc, index) => (
+                        <div
+                          key={doc.id || index}
+                          className="border border-gray-200 rounded-lg p-4 hover:border-gray-300 transition-colors"
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                              <div className="flex-shrink-0">
+                                <FileText className="w-8 h-8 text-red-500" />
+                              </div>
+                              <div>
+                                <p className="font-medium text-gray-900">
+                                  {doc.name}
                                 </p>
-                              )}
+                                <p className="text-sm text-gray-500">
+                                  {doc.type}
+                                </p>
+                                <p className="text-xs text-gray-400">
+                                  {doc.size}
+                                </p>
+                                {doc.uploadedAt && (
+                                  <p className="text-xs text-gray-400">
+                                    Uploaded: {formatDate(doc.uploadedAt)}
+                                  </p>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex space-x-2">
-                            <button
-                              onClick={() =>
-                                handleDocumentDownload(doc.id, doc.name)
-                              }
-                              className="text-[#A8C045] hover:text-[#8fa838] font-medium text-sm transition-colors p-1"
-                              title="Download document"
-                            >
-                              <Download className="w-4 h-4" />
-                            </button>
+                            <div className="flex space-x-2">
+                              <button
+                                onClick={() =>
+                                  handleDocumentDownload(doc.id, doc.name)
+                                }
+                                className="text-[#A8C045] hover:text-[#8fa838] font-medium text-sm transition-colors p-1"
+                                title="Download document"
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    <FileText className="w-12 h-12 mx-auto mb-2 text-gray-300" />
-                    <p>No documents uploaded yet</p>
-                  </div>
-                )}
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <FileText className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                      <p>No documents uploaded yet</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="mt-8 flex justify-between items-center pt-6 border-t border-gray-200">
+              {/* Action Buttons Footer */}
+              <div className="flex justify-between items-center px-6 py-4 border-t border-gray-200 bg-gray-50 flex-shrink-0">
                 <div className="flex space-x-3">
                   <button
                     onClick={() => setShowDetailsModal(false)}
@@ -1655,18 +1831,20 @@ const AdminApplicationManagement = () => {
                 </p>
                 <span
                   className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                    statusConfig[selectedApplication.status]?.bg ||
-                    statusConfig.pending.bg
+                    statusConfig[normalizeStatus(selectedApplication.status)]
+                      ?.bg || statusConfig.pending.bg
                   } ${
-                    statusConfig[selectedApplication.status]?.color ||
-                    statusConfig.pending.color
+                    statusConfig[normalizeStatus(selectedApplication.status)]
+                      ?.color || statusConfig.pending.color
                   }`}
                 >
                   {React.createElement(
-                    statusConfig[selectedApplication.status]?.icon || Clock,
+                    statusConfig[normalizeStatus(selectedApplication.status)]
+                      ?.icon || Clock,
                     { className: "w-3 h-3 mr-1" }
                   )}
-                  {statusConfig[selectedApplication.status]?.label || "Unknown"}
+                  {statusConfig[normalizeStatus(selectedApplication.status)]
+                    ?.label || "Unknown"}
                 </span>
               </div>
 
@@ -1676,7 +1854,9 @@ const AdminApplicationManagement = () => {
                 </label>
                 <div className="space-y-2">
                   {Object.entries(statusConfig)
-                    .filter(([status]) => status !== "draft") // Hide draft status for admin updates
+                    .filter(
+                      ([status]) => status !== "draft" && status !== "returned"
+                    ) // Hide draft and returned status for admin updates
                     .map(([status, config]) => (
                       <label key={status} className="flex items-center">
                         <input
@@ -1750,7 +1930,7 @@ const AdminApplicationManagement = () => {
                   Cancel
                 </button>
                 <button
-                  onClick={handleStatusUpdate}
+                  onClick={confirmStatusUpdate}
                   disabled={
                     isLoading ||
                     !newStatus ||
@@ -1777,6 +1957,37 @@ const AdminApplicationManagement = () => {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal for Status Update */}
+      <ConfirmModal
+        isOpen={showConfirmModal && confirmAction === "updateStatus"}
+        title="Confirm Status Update"
+        message={
+          confirmData?.newStatus === "rejected"
+            ? `Are you sure you want to reject this application (${confirmData?.appNumber})? This action cannot be undone.`
+            : `Are you sure you want to update the status to "${(
+                statusConfig[normalizeStatus(confirmData?.newStatus)]?.label ||
+                confirmData?.newStatus ||
+                ""
+              )
+                .replace(/_/g, " ")
+                .replace(/\b\w/g, (l) => l.toUpperCase())}" for application ${
+                confirmData?.appNumber || "-"
+              }?`
+        }
+        confirmLabel="Confirm"
+        cancelLabel="Cancel"
+        loading={isLoading}
+        onConfirm={() => {
+          setShowConfirmModal(false);
+          handleStatusUpdate();
+        }}
+        onCancel={() => {
+          setShowConfirmModal(false);
+          setConfirmAction(null);
+          setConfirmData(null);
+        }}
+      />
     </div>
   );
 };
