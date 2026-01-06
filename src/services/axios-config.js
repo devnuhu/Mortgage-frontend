@@ -21,7 +21,7 @@ const envReactApp =
     process.env.REACT_APP_API_URL) ||
   null;
 const API_BASE_URL =
-  envVite || envReactApp || "https://accessmortgageapi.armpension.com/api";
+  envVite || envReactApp || "https://accessmortgageapi.access-armpensions.com/api";
 const isDevelopment =
   (importMetaEnv?.MODE ||
     (typeof process !== "undefined" && process.env?.NODE_ENV) ||
