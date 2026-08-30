@@ -1,4 +1,53 @@
-import api from "./axios-config";
+import api from "./axios-config.js";
+import axios from "axios";
+
+const RSA_VALIDATION_BASE_URL = "https://cpasapi.access-armpensions.com/api";
+
+export const normalizePaginationParams = (
+  pageNumberInput = 1,
+  pageSizeInput = 50,
+) => {
+  const parseNumericValue = (value, fallback) => {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+
+    if (typeof value === "string" && value.trim() !== "") {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+
+    if (value && typeof value === "object") {
+      const nestedPage = value.pageNumber ?? value.page ?? value.pageNo;
+      if (nestedPage !== undefined) {
+        return parseNumericValue(nestedPage, fallback);
+      }
+
+      const nestedSize = value.pageSize ?? value.size;
+      if (nestedSize !== undefined) {
+        return parseNumericValue(nestedSize, fallback);
+      }
+    }
+
+    return fallback;
+  };
+
+  const normalizedPageNumber = Math.max(
+    1,
+    Math.floor(parseNumericValue(pageNumberInput, 1)),
+  );
+  const normalizedPageSize = Math.max(
+    1,
+    Math.floor(parseNumericValue(pageSizeInput, 50)),
+  );
+
+  return {
+    pageNumber: normalizedPageNumber,
+    pageSize: normalizedPageSize,
+  };
+};
 
 /**
  * Application API Service Functions
@@ -10,13 +59,22 @@ import api from "./axios-config";
 // ==========================================
 
 /**
- * Get all applications (Admin only)
- * GET /api/Applications
- * @returns {Promise<Array>} List of all applications
+ * Get all applications (Admin only) - Paginated
+ * GET /api/applications with pagination query parameters
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages: number, hasNextPage: boolean, hasPreviousPage: boolean}>}
  */
-export const getAllApplications = async () => {
+export const getAllApplications = async (pageNumber = 1, pageSize = 50) => {
   try {
-    const response = await api.get("/Applications");
+    const { pageNumber: normalizedPageNumber, pageSize: normalizedPageSize } =
+      normalizePaginationParams(pageNumber, pageSize);
+    const response = await api.get("/applications", {
+      params: {
+        pageNumber: normalizedPageNumber,
+        pageSize: normalizedPageSize,
+      },
+    });
     // Normalize statuses before returning to UI
     const normalizeStatus = (s) => {
       if (!s) return s;
@@ -26,10 +84,13 @@ export const getAllApplications = async () => {
       return v;
     };
 
-    return (response.data || []).map((app) => ({
-      ...app,
-      status: normalizeStatus(app.status),
-    }));
+    return {
+      ...response.data,
+      data: (response.data.data || []).map((app) => ({
+        ...app,
+        status: normalizeStatus(app.status),
+      })),
+    };
   } catch (error) {
     console.error("❌ Get all applications error:", error);
     throw error;
@@ -37,17 +98,112 @@ export const getAllApplications = async () => {
 };
 
 /**
- * Get current user's applications (Client only)
- * GET /api/Applications/my-applications
- * @returns {Promise<Array>} List of user's applications
+ * Get current user's applications (Client only) - Paginated
+ * GET /api/applications/my-applications/paged
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages: number, hasNextPage: boolean, hasPreviousPage: boolean}>}
  */
-export const getMyApplications = async () => {
+export const getMyApplications = async (
+  pageNumber = 1,
+  pageSize = 50,
+  searchTerm = "",
+) => {
   try {
-    const response = await api.get("/Applications/my-applications");
+    const { pageNumber: normalizedPageNumber, pageSize: normalizedPageSize } =
+      normalizePaginationParams(pageNumber, pageSize);
+    const params = {
+      pageNumber: normalizedPageNumber,
+      pageSize: normalizedPageSize,
+    };
+
+    if (String(searchTerm || "").trim()) {
+      params.searchTerm = String(searchTerm).trim();
+    }
+
+    const response = await api.get("/applications/my-applications/paged", {
+      params,
+    });
     // Return raw backend data for client-side views (keep 'resubmitted')
     return response.data;
   } catch (error) {
     console.error("❌ Get my applications error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Get current user's applications by status (Client only) - paginated
+ * GET /api/applications/my-applications/by-status
+ * @param {string} status - Application status filter
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages?: number, hasNextPage?: boolean, hasPreviousPage?: boolean}>}
+ */
+export const getMyApplicationsByStatus = async (
+  status,
+  pageNumber = 1,
+  pageSize = 50,
+) => {
+  try {
+    const { pageNumber: normalizedPageNumber, pageSize: normalizedPageSize } =
+      normalizePaginationParams(pageNumber, pageSize);
+    const response = await api.get("/applications/my-applications/by-status", {
+      params: {
+        status,
+        pageNumber: normalizedPageNumber,
+        pageSize: normalizedPageSize,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("❌ Get my applications by status error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Get current user's rejected applications (Client only)
+ * GET /api/Applications/my-applications/rejected
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages?: number, hasNextPage?: boolean, hasPreviousPage?: boolean}>}
+ */
+export const getMyRejectedApplications = async (
+  pageNumber = 1,
+  pageSize = 50,
+) => {
+  try {
+    const { pageNumber: normalizedPageNumber, pageSize: normalizedPageSize } =
+      normalizePaginationParams(pageNumber, pageSize);
+    const response = await api.get("/Applications/my-applications/rejected", {
+      params: {
+        pageNumber: normalizedPageNumber,
+        pageSize: normalizedPageSize,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error("❌ Get my rejected applications error:", error);
+    throw error;
+  }
+};
+
+/**
+ * Get all current user's applications (Client only) - non-paginated
+ * GET /api/applications/my-applications/all
+ * @returns {Promise<Array>} Array of applications
+ */
+export const getMyApplicationsAll = async () => {
+  try {
+    const { pageNumber, pageSize } = normalizePaginationParams(1, 1000);
+    const response = await api.get("/applications/my-applications/paged", {
+      params: { pageNumber, pageSize },
+    });
+    const payload = response.data || {};
+    return Array.isArray(payload) ? payload : payload.data || [];
+  } catch (error) {
+    console.error("❌ Get all client applications error:", error);
     throw error;
   }
 };
@@ -94,6 +250,145 @@ export const getApplicationReviewHistory = async (id) => {
 };
 
 /**
+ * Get application review history via the paged endpoint
+ * GET /api/applications/{id}/review-history/paged
+ * @param {string} id - Application ID
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 10)
+ * @returns {Promise<Object>} Paged review history response
+ */
+export const getApplicationReviewHistoryPaged = async (
+  id,
+  pageNumber = 1,
+  pageSize = 10,
+) => {
+  try {
+    if (!id) {
+      throw new Error("Application ID is required");
+    }
+
+    const { pageNumber: normalizedPageNumber, pageSize: normalizedPageSize } =
+      normalizePaginationParams(pageNumber, pageSize);
+    const response = await api.get(`/applications/${id}/review-history/paged`, {
+      params: {
+        pageNumber: normalizedPageNumber,
+        pageSize: normalizedPageSize,
+      },
+    });
+    return response.data;
+  } catch (error) {
+    console.error(
+      `❌ Get application ${id} paged review history error:`,
+      error,
+    );
+    throw error;
+  }
+};
+
+/**
+ * Validate RSA PIN against external pension API
+ * GET https://cpasapi.access-armpensions.com/api/Portal/ValidateMpsPin/{RsaPin}
+ * @param {string} rsaPin - Full RSA PIN including PEN prefix
+ * @returns {Promise<Object>} Validation response
+ */
+export const validateRsaPin = async (rsaPin) => {
+  try {
+    if (!rsaPin) {
+      throw new Error("RSA PIN is required for validation");
+    }
+
+    const response = await axios.get(
+      `${RSA_VALIDATION_BASE_URL}/Portal/GetBiodata/${encodeURIComponent(
+        rsaPin,
+      )}`,
+    );
+
+    return response.data;
+  } catch (error) {
+    if (error?.response?.status === 404) {
+      throw new Error("Invalid rsapin");
+    }
+
+    console.error(`❌ Validate RSA PIN ${rsaPin} error:`, error);
+    throw error;
+  }
+};
+
+export const normalizeRsaPinForCheck = (rsaPin) => {
+  if (rsaPin === undefined || rsaPin === null || String(rsaPin).trim() === "") {
+    throw new Error("RsaPin cannot be empty");
+  }
+
+  const normalized = String(rsaPin).trim().toUpperCase();
+  const withoutPrefix = normalized.replace(/^PEN/i, "");
+
+  if (!withoutPrefix || !/^[A-Z0-9]{12}$/.test(withoutPrefix)) {
+    throw new Error("RsaPin cannot be empty");
+  }
+
+  return `PEN${withoutPrefix}`;
+};
+
+export const formatRsaPinAvailabilityResponse = (payload = {}) => {
+  const response = payload || {};
+  const exists = !!response.exists;
+  const message =
+    typeof response.message === "string" && response.message.trim()
+      ? response.message
+      : exists
+        ? "An active application already exists with this RSA PIN"
+        : "No active application found with this RSA PIN. You can proceed.";
+
+  const formatted = {
+    ...response,
+    exists,
+    message,
+  };
+
+  if (exists) {
+    const details = [
+      response.applicationNumber,
+      response.borrowerName,
+      response.status,
+    ].filter(Boolean);
+
+    if (details.length > 0) {
+      formatted.message = `${message} (${details.join(" • ")})`;
+    }
+  }
+
+  return formatted;
+};
+
+export const checkRsaPinAvailability = async (rsaPin) => {
+  try {
+    const normalizedPin = normalizeRsaPinForCheck(rsaPin);
+    const response = await api.get(
+      `/applications/check-rsapin/${encodeURIComponent(normalizedPin)}`,
+    );
+    return formatRsaPinAvailabilityResponse(response?.data);
+  } catch (error) {
+    const serverMessage =
+      error?.response?.data?.message ||
+      error?.message ||
+      "Unable to verify RSA PIN availability right now.";
+    if (
+      error?.response?.status === 400 &&
+      /cannot be empty/i.test(serverMessage)
+    ) {
+      throw new Error("RsaPin cannot be empty");
+    }
+
+    if (error?.response?.status === 404) {
+      throw new Error("Invalid rsapin");
+    }
+
+    console.error(`❌ Check RSA PIN availability ${rsaPin} error:`, error);
+    throw new Error(serverMessage);
+  }
+};
+
+/**
  * Create new application (Client only)
  * POST /api/Applications
  * @param {Object} applicationData - Application data
@@ -133,7 +428,7 @@ export const updateApplication = async (id, applicationData) => {
         try {
           const patchResp = await api.patch(
             `/Applications/${id}`,
-            applicationData
+            applicationData,
           );
           return patchResp.data;
         } catch (patchErr) {
@@ -151,18 +446,29 @@ export const updateApplication = async (id, applicationData) => {
 
 /**
  * Submit application (Client only)
- * POST /api/Applications/{id}/submit
+ * PUT /api/applications/{id}/submit
  * @param {string} id - Application ID
  * @returns {Promise<Object>} Success response
  */
-export const submitApplication = async (id) => {
+export const submitApplication = async (id, payload = {}) => {
   try {
     if (!id) {
       throw new Error("Application ID is required");
     }
 
-    const response = await api.post(`/Applications/${id}/submit`);
-    return response.data;
+    try {
+      const response = await api.put(`/applications/${id}/submit`, payload);
+      return response.data;
+    } catch (error) {
+      if (error.response?.status === 405) {
+        console.warn(
+          `⚠️ PUT /applications/${id}/submit not allowed, retrying with POST`,
+        );
+        const response = await api.post(`/applications/${id}/submit`, payload);
+        return response.data;
+      }
+      throw error;
+    }
   } catch (error) {
     console.error(`❌ Submit application ${id} error:`, error);
     throw error;
@@ -221,7 +527,7 @@ export const deleteApplication = async (id) => {
 
 /**
  * Upload file for an application
- * POST /api/File/upload
+ * POST /api/files/upload
  * @param {File} file - File to upload
  * @param {string} applicationId - Application ID
  * @param {string} documentType - Type of document
@@ -238,7 +544,7 @@ export const uploadFile = async (file, applicationId, documentType) => {
     formData.append("ApplicationId", applicationId);
     formData.append("DocumentType", documentType);
 
-    const response = await api.post("/File/upload", formData, {
+    const response = await api.post("/files/upload", formData, {
       headers: {
         "Content-Type": "multipart/form-data",
       },
@@ -268,7 +574,7 @@ export const getFilesByApplication = async (applicationId) => {
   } catch (error) {
     console.error(
       `❌ Get files for application ${applicationId} error:`,
-      error
+      error,
     );
     throw error;
   }
@@ -404,7 +710,7 @@ export const calculateApplicationStats = (applications) => {
       returned: 0,
       submitted: 0,
       rejected: 0,
-    }
+    },
   );
 };
 

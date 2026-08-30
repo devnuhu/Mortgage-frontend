@@ -1,23 +1,18 @@
 import api from "./axios-config";
+import * as UserManagementAPI from "./user-management-api";
 
 /**
  * PMI Company API Service Functions
- * These functions interface with your .NET PMI Controller endpoints
  */
 
-// ==========================================
-// PMI COMPANY ENDPOINTS
-// ==========================================
-
 /**
- * Get all PMI companies (Admin only)
- * GET /api/PMI
- * @returns {Promise<Array>} List of all PMI companies
+ * Get all PMI companies
+ * @returns {Promise<Array>} List of PMI companies
  */
 export const getAllPMICompanies = async () => {
   try {
-    const response = await api.get("/PMI");
-    return response.data;
+    const response = await UserManagementAPI.getAllPMICompanies();
+    return response;
   } catch (error) {
     console.error("❌ Get all PMI companies error:", error);
     throw error;
@@ -26,7 +21,6 @@ export const getAllPMICompanies = async () => {
 
 /**
  * Get PMI company by ID
- * GET /api/PMI/{id}
  * @param {string} id - PMI Company ID
  * @returns {Promise<Object>} PMI company details
  */
@@ -36,8 +30,8 @@ export const getPMICompanyById = async (id) => {
       throw new Error("PMI Company ID is required");
     }
 
-    const response = await api.get(`/PMI/${id}`);
-    return response.data;
+    const response = await UserManagementAPI.getPMICompanyById(id);
+    return response;
   } catch (error) {
     console.error(`❌ Get PMI company ${id} error:`, error);
     throw error;
@@ -45,19 +39,14 @@ export const getPMICompanyById = async (id) => {
 };
 
 /**
- * Create new PMI company (Admin only)
- * POST /api/PMI
+ * Create new PMI company
  * @param {Object} pmiData - PMI company data
- * @returns {Promise<Object>} Created PMI company with temporary password
+ * @returns {Promise<Object>} Created PMI company
  */
 export const createPMICompany = async (pmiData) => {
   try {
-    if (!pmiData) {
-      throw new Error("PMI company data is required");
-    }
-
-    const response = await api.post("/PMI", pmiData);
-    return response.data;
+    const response = await UserManagementAPI.createPMICompany(pmiData);
+    return response;
   } catch (error) {
     console.error("❌ Create PMI company error:", error);
     throw error;
@@ -65,89 +54,65 @@ export const createPMICompany = async (pmiData) => {
 };
 
 /**
- * Update PMI company (Admin only)
- * PUT /api/PMI/{id}
+ * Update PMI company
  * @param {string} id - PMI Company ID
  * @param {Object} updateData - Update data
  * @returns {Promise<Object>} Updated PMI company
  */
 export const updatePMICompany = async (id, updateData) => {
   try {
-    if (!id) {
-      throw new Error("PMI Company ID is required");
-    }
-    if (!updateData) {
-      throw new Error("Update data is required");
-    }
-
-    const response = await api.put(`/PMI/${id}`, updateData);
-    return response.data;
+    const response = await UserManagementAPI.updatePMICompany(id, updateData);
+    return response;
   } catch (error) {
-    console.error(`❌ Update PMI company ${id} error:`, error);
+    console.error("❌ Update PMI company error:", error);
     throw error;
   }
 };
 
 /**
- * Update PMI company status (Admin only)
- * PATCH /api/PMI/{id}/status
+ * Update PMI company status
  * @param {string} id - PMI Company ID
  * @param {string} status - New status
  * @returns {Promise<Object>} Success response
  */
 export const updatePMICompanyStatus = async (id, status) => {
   try {
-    if (!id) {
-      throw new Error("PMI Company ID is required");
-    }
-    if (!status) {
-      throw new Error("Status is required");
-    }
-
-    const response = await api.patch(`/PMI/${id}/status`, { Status: status });
-    return response.data;
+    const response = await UserManagementAPI.updatePMICompanyStatus(id, status);
+    return response;
   } catch (error) {
-    console.error(`❌ Update PMI company ${id} status error:`, error);
+    console.error("❌ Update PMI company status error:", error);
     throw error;
   }
 };
 
 /**
- * Reset PMI company temporary password (Admin only)
- * POST /api/PMI/{id}/reset-password
+ * Reset PMI company temporary password
  * @param {string} id - PMI Company ID
  * @returns {Promise<Object>} Response with new temporary password
  */
 export const resetTempPassword = async (id) => {
   try {
-    if (!id) {
-      throw new Error("PMI Company ID is required");
-    }
-
+    // This endpoint is not currently exposed in the shared API helper.
+    // Fallback to using a backend reset route if available.
     const response = await api.post(`/PMI/${id}/reset-password`);
     return response.data;
   } catch (error) {
-    console.error(`❌ Reset PMI company ${id} password error:`, error);
+    console.error("❌ Reset PMI password error:", error);
     throw error;
   }
 };
 
 /**
- * Delete PMI company (Admin only)
- * DELETE /api/PMI/{id}
+ * Delete PMI company
  * @param {string} id - PMI Company ID
  * @returns {Promise<Object>} Success response
  */
 export const deletePMICompany = async (id) => {
   try {
-    if (!id) {
-      throw new Error("PMI Company ID is required");
-    }
-
-    const response = await api.delete(`/PMI/${id}`);
-    return response.data;
+    const response = await UserManagementAPI.deletePMICompany(id);
+    return response;
   } catch (error) {
-    console.error(`❌ Delete PMI company ${id} error:`, error);
+    console.error("❌ Delete PMI company error:", error);
     throw error;
   }
 };
@@ -176,7 +141,7 @@ export const getPMICompanyForUser = async (pmiCompanyId) => {
     // If access is denied (401/403), return limited data
     if (error.response?.status === 401 || error.response?.status === 403) {
       console.warn(
-        "User doesn't have permission to access PMI details, using fallback"
+        "User doesn't have permission to access PMI details, using fallback",
       );
       return null;
     }
@@ -198,16 +163,20 @@ export const getPMICompanyForUser = async (pmiCompanyId) => {
 export const formatPMICompanyForDisplay = (pmiCompany) => {
   if (!pmiCompany) return null;
 
+  // Handle both formats: from applications (name, email) and from PMI controller (pmiName, emailAddress)
+  const name = pmiCompany.name || pmiCompany.pmiName;
+  const email = pmiCompany.email || pmiCompany.emailAddress;
+
   return {
     id: pmiCompany.id,
-    name: pmiCompany.pmiName,
-    pmiName: pmiCompany.pmiName, // Keep both for compatibility
-    email: pmiCompany.emailAddress,
-    emailAddress: pmiCompany.emailAddress, // Keep both for compatibility
-    resourcePersonName: pmiCompany.resourcePersonName,
-    resourcePersonEmail: pmiCompany.resourcePersonEmail,
-    phoneNumber: pmiCompany.phoneNumber,
-    status: pmiCompany.status,
+    name: name,
+    pmiName: name, // Keep both for compatibility
+    email: email,
+    emailAddress: email, // Keep both for compatibility
+    resourcePersonName: pmiCompany.resourcePersonName || "",
+    resourcePersonEmail: pmiCompany.resourcePersonEmail || "",
+    phoneNumber: pmiCompany.phoneNumber || "",
+    status: pmiCompany.status || "ACTIVE",
     createdAt: pmiCompany.createdAt,
     updatedAt: pmiCompany.updatedAt,
     totalApplications: pmiCompany.totalApplications || 0,

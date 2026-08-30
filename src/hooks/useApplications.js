@@ -22,14 +22,15 @@ import {
  */
 export const useApplications = (options = {}) => {
   const {
-    autoRefresh = true,
+    autoRefresh = false,
     refreshInterval = 5 * 60 * 1000, // 5 minutes
     initialSort = { field: "updatedAt", order: "desc" },
     enableFiltering = true,
+    fetchOnMount = true,
   } = options;
 
   // Auth context
-  const { user, isAdmin, isClient } = useAuth();
+  const { user, isAdmin, isClient, isServiceManager } = useAuth();
 
   // State management
   const [applications, setApplications] = useState([]);
@@ -52,6 +53,10 @@ export const useApplications = (options = {}) => {
     return calculateDashboardStats(filteredApplications);
   }, [filteredApplications]);
 
+  const isCurrentAdmin = isAdmin();
+  const isCurrentClient = isClient();
+  const isCurrentServiceManager = isServiceManager();
+
   // Fetch applications based on user role
   const fetchApplications = useCallback(
     async (showRefreshIndicator = false) => {
@@ -64,21 +69,24 @@ export const useApplications = (options = {}) => {
       setError(null);
 
       try {
-        let fetchedApplications = [];
+        let response;
 
-        if (isAdmin()) {
-          fetchedApplications = await getAllApplications();
-        } else if (isClient() && user?.id) {
-          fetchedApplications = await getApplicationsByUser(user.id);
+        if (isCurrentAdmin) {
+          response = await getAllApplications(1, 50);
+        } else if ((isCurrentClient || isCurrentServiceManager) && user?.id) {
+          response = await getApplicationsByUser(user.id, 1, 50);
         } else if (user?.pmiCompanyId) {
-          fetchedApplications = await getApplicationsByPMI(user.pmiCompanyId);
+          response = await getApplicationsByPMI(user.pmiCompanyId, 1, 50);
         }
+
+        // Extract data array from paginated response
+        const fetchedApplications = response.data || response;
 
         // Sort applications
         const sortedApplications = sortApplications(
           fetchedApplications,
           sortConfig.field,
-          sortConfig.order
+          sortConfig.order,
         );
 
         setApplications(sortedApplications);
@@ -96,7 +104,14 @@ export const useApplications = (options = {}) => {
         setIsRefreshing(false);
       }
     },
-    [user, isAdmin, isClient, sortConfig]
+    [
+      user?.id,
+      user?.pmiCompanyId,
+      isCurrentAdmin,
+      isCurrentClient,
+      isCurrentServiceManager,
+      sortConfig,
+    ],
   );
 
   // Apply filters and search
@@ -117,7 +132,7 @@ export const useApplications = (options = {}) => {
           app.lastName?.toLowerCase().includes(searchLower) ||
           app.applicationNumber?.toLowerCase().includes(searchLower) ||
           app.rsaPin?.toLowerCase().includes(searchLower) ||
-          app.pmiCompanyName?.toLowerCase().includes(searchLower)
+          app.pmiCompanyName?.toLowerCase().includes(searchLower),
       );
     }
 
@@ -135,7 +150,9 @@ export const useApplications = (options = {}) => {
 
   // Auto-refresh setup
   useEffect(() => {
-    fetchApplications();
+    if (fetchOnMount) {
+      fetchApplications();
+    }
 
     if (autoRefresh) {
       const interval = setInterval(() => {
@@ -144,7 +161,7 @@ export const useApplications = (options = {}) => {
 
       return () => clearInterval(interval);
     }
-  }, [fetchApplications, autoRefresh, refreshInterval]);
+  }, [fetchApplications, autoRefresh, refreshInterval, fetchOnMount]);
 
   // CRUD Operations
   const createNewApplication = useCallback(
@@ -157,7 +174,7 @@ export const useApplications = (options = {}) => {
       try {
         const newApplication = await createApplication(
           user.id,
-          applicationData
+          applicationData,
         );
 
         // Add to local state immediately
@@ -171,7 +188,7 @@ export const useApplications = (options = {}) => {
         setIsLoading(false);
       }
     },
-    [user]
+    [user],
   );
 
   const updateStatus = useCallback(
@@ -183,15 +200,14 @@ export const useApplications = (options = {}) => {
       try {
         const updatedApplication = await updateApplicationStatus(
           applicationId,
-          user.id,
-          statusData
+          statusData,
         );
 
         // Update local state
         setApplications((prev) =>
           prev.map((app) =>
-            app.id === applicationId ? updatedApplication : app
-          )
+            app.id === applicationId ? updatedApplication : app,
+          ),
         );
 
         return updatedApplication;
@@ -200,7 +216,7 @@ export const useApplications = (options = {}) => {
         throw err;
       }
     },
-    [user]
+    [user],
   );
 
   const submitApp = useCallback(async (applicationId) => {
@@ -216,8 +232,8 @@ export const useApplications = (options = {}) => {
                 status: ApplicationStatus.SUBMITTED,
                 submittedAt: new Date().toISOString(),
               }
-            : app
-        )
+            : app,
+        ),
       );
 
       return true;
@@ -286,7 +302,7 @@ export const useApplications = (options = {}) => {
     (applicationId) => {
       return applications.find((app) => app.id === applicationId);
     },
-    [applications]
+    [applications],
   );
 
   // Get applications by status from cache
@@ -294,7 +310,7 @@ export const useApplications = (options = {}) => {
     (status) => {
       return filterApplicationsByStatus(applications, status);
     },
-    [applications]
+    [applications],
   );
 
   return {
@@ -336,13 +352,13 @@ export const useApplications = (options = {}) => {
     hasApplications: applications.length > 0,
     isEmpty: applications.length === 0 && !isLoading,
     hasError: !!error,
-    canCreateApplication: isClient() || isAdmin(),
+    canCreateApplication: isClient() || isAdmin() || isServiceManager(),
     canUpdateStatus: isAdmin(),
     canDeleteApplication: (applicationId) => {
       const app = getApplicationFromCache(applicationId);
       return (
         app?.status === ApplicationStatus.DRAFT &&
-        (isAdmin() || app.userId === user?.id)
+        (isAdmin() || isServiceManager() || app.userId === user?.id)
       );
     },
   };
@@ -393,8 +409,7 @@ export const useApplication = (applicationId) => {
       try {
         const updatedApp = await updateApplicationStatus(
           application.id,
-          user.id,
-          statusData
+          statusData,
         );
         setApplication(updatedApp);
         return updatedApp;
@@ -403,7 +418,7 @@ export const useApplication = (applicationId) => {
         throw err;
       }
     },
-    [application, user]
+    [application, user],
   );
 
   const submitApp = useCallback(async () => {
@@ -456,7 +471,7 @@ export const useApplicationStats = (applications = []) => {
     return {
       approved: Math.round(((stats.approved || 0) / total) * 100),
       pending: Math.round(
-        (((stats.submitted || 0) + (stats.under_review || 0)) / total) * 100
+        (((stats.submitted || 0) + (stats.under_review || 0)) / total) * 100,
       ),
       returned: Math.round(((stats.returned || 0) / total) * 100),
       draft: Math.round(((stats.draft || 0) / total) * 100),

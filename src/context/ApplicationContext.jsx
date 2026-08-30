@@ -39,7 +39,7 @@ export const useApplication = () => {
   const context = useContext(ApplicationContext);
   if (!context) {
     throw new Error(
-      "useApplication must be used within an ApplicationProvider"
+      "useApplication must be used within an ApplicationProvider",
     );
   }
   return context;
@@ -61,6 +61,7 @@ export const ApplicationProvider = ({ children }) => {
     middleName: "",
     lastName: "",
     rsaPin: "",
+    phoneNumber: "",
 
     // Financial Information
     equityValue: "",
@@ -79,6 +80,11 @@ export const ApplicationProvider = ({ children }) => {
 
   // Backend document count tracking
   const [backendDocumentCount, setBackendDocumentCount] = useState(0);
+  // Mandatory documents validation
+  const [mandatoryDocumentsStatus, setMandatoryDocumentsStatus] = useState({
+    uploadedCount: 0,
+    totalMandatory: 0,
+  });
   // Track client-side resubmitted application IDs for optimistic UI
   const [clientResubmittedIds, setClientResubmittedIds] = useState(() => {
     try {
@@ -96,7 +102,7 @@ export const ApplicationProvider = ({ children }) => {
       try {
         sessionStorage.setItem(
           "mmgt_client_resubmitted_ids",
-          JSON.stringify(next)
+          JSON.stringify(next),
         );
       } catch (err) {
         console.warn("Could not persist client resubmitted ids:", err);
@@ -108,6 +114,12 @@ export const ApplicationProvider = ({ children }) => {
   // Form validation errors
   const [errors, setErrors] = useState({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [rsaPinAvailability, setRsaPinAvailability] = useState({
+    exists: false,
+    checked: false,
+    message: "",
+    details: null,
+  });
 
   // Validation rules
   const validationRules = {
@@ -115,18 +127,18 @@ export const ApplicationProvider = ({ children }) => {
       required: true,
       minLength: 2,
       maxLength: 100,
-      pattern: /^[a-zA-Z\s]+$/,
+      pattern: /^[A-Za-zÀ-ÖØ-öø-ÿ\s'’\-.]+$/u,
     },
     lastName: {
       required: true,
       minLength: 2,
       maxLength: 100,
-      pattern: /^[a-zA-Z\s]+$/,
+      pattern: /^[A-Za-zÀ-ÖØ-öø-ÿ\s'’\-.]+$/u,
     },
     middleName: {
       required: false,
       maxLength: 100,
-      pattern: /^[a-zA-Z\s]*$/,
+      pattern: /^[A-Za-zÀ-ÖØ-öø-ÿ\s'’\-.]*$/u,
     },
     rsaPin: {
       required: true,
@@ -297,11 +309,21 @@ export const ApplicationProvider = ({ children }) => {
         const middleNameError = validateField(
           "middleName",
           currentApplication.middleName,
-          currentApplication
+          currentApplication,
         );
         if (middleNameError) {
           newErrors.middleName = middleNameError;
         }
+      }
+
+      const isExistingDraft =
+        Boolean(currentApplication.backendApplicationId) &&
+        String(currentApplication.status || "").toLowerCase() === "draft";
+
+      if (rsaPinAvailability.exists && !isExistingDraft) {
+        newErrors.rsaPin =
+          rsaPinAvailability.message ||
+          "An active application already exists with this RSA PIN";
       }
 
       const isValid = Object.keys(newErrors).length === 0;
@@ -324,7 +346,13 @@ export const ApplicationProvider = ({ children }) => {
 
       return isValid;
     },
-    [currentApplication, currentStep, backendDocumentCount, validateField]
+    [
+      currentApplication,
+      currentStep,
+      backendDocumentCount,
+      rsaPinAvailability,
+      validateField,
+    ],
   );
 
   // Update application field
@@ -357,7 +385,7 @@ export const ApplicationProvider = ({ children }) => {
             const error = validateField(
               "propertyValue",
               updated.propertyValue,
-              updated
+              updated,
             );
             setErrors((prev) => {
               if (error) {
@@ -388,7 +416,7 @@ export const ApplicationProvider = ({ children }) => {
         return updated;
       });
     },
-    [errors, validateField]
+    [errors, validateField],
   );
 
   // Document management (local staging only)
@@ -436,6 +464,30 @@ export const ApplicationProvider = ({ children }) => {
     }
   }, []);
 
+  // NEW: Mandatory documents validation handler
+  const handleMandatoryDocumentsValidation = useCallback(
+    (uploadedCount, totalMandatory) => {
+      console.log("📋 Mandatory documents validation:", {
+        uploadedCount,
+        totalMandatory,
+      });
+      setMandatoryDocumentsStatus({
+        uploadedCount,
+        totalMandatory,
+      });
+
+      // Clear documents error when all mandatory docs are uploaded
+      if (uploadedCount === totalMandatory && totalMandatory > 0) {
+        setErrors((prev) => {
+          const newErrors = { ...prev };
+          delete newErrors.documents;
+          return newErrors;
+        });
+      }
+    },
+    [],
+  );
+
   // FIXED: Step navigation with proper API integration
   const nextStep = useCallback(async () => {
     console.log(`🚀 NEXT STEP: ${currentStep} -> ${currentStep + 1}`);
@@ -463,9 +515,10 @@ export const ApplicationProvider = ({ children }) => {
           middleName: currentApplication.middleName || null,
           lastName: currentApplication.lastName,
           rsaPin: currentApplication.rsaPin,
+          phoneNumber: currentApplication.phoneNumber || null,
           equityValue: parseFloat(currentApplication.equityValue),
           supplementaryValue: parseFloat(
-            currentApplication.supplementaryValue || 0
+            currentApplication.supplementaryValue || 0,
           ),
           loanAmount: parseFloat(currentApplication.loanAmount),
           propertyValue: parseFloat(currentApplication.propertyValue),
@@ -492,17 +545,43 @@ export const ApplicationProvider = ({ children }) => {
         console.error("❌ Error creating application:", error);
 
         let errorMessage = "Failed to create application. Please try again.";
+        const apiData = error.response?.data;
 
-        // Handle different types of API errors
-        if (error.response?.data?.message) {
-          errorMessage = error.response.data.message;
+        if (apiData) {
+          if (typeof apiData === "string") {
+            errorMessage = apiData;
+          } else if (typeof apiData.message === "string") {
+            errorMessage = apiData.message;
+          } else {
+            errorMessage = JSON.stringify(apiData);
+          }
         } else if (error.message) {
           errorMessage = error.message;
         }
 
-        setErrors({
-          general: errorMessage,
-        });
+        if (/an active application already exists/i.test(errorMessage)) {
+          setRsaPinAvailability({
+            exists: true,
+            checked: true,
+            message:
+              "An active application already exists with this RSA PIN. Please verify the RSA PIN and use a different one.",
+            details: null,
+          });
+          setErrors({
+            rsaPin:
+              "An active application already exists with this RSA PIN. Please verify the RSA PIN and use a different one.",
+          });
+          return false;
+        }
+
+        const nextErrors = {};
+        if (/rsa\s*pin|rsaPin|RSA PIN/i.test(errorMessage)) {
+          nextErrors.rsaPin = errorMessage;
+        } else {
+          nextErrors.general = errorMessage;
+        }
+
+        setErrors(nextErrors);
         return false;
       } finally {
         setIsSubmitting(false);
@@ -545,19 +624,26 @@ export const ApplicationProvider = ({ children }) => {
     try {
       setIsSubmitting(true);
 
-      // The submitApplicationById returns { message: "Application submitted successfully" }
+      // The submitApplicationById returns application data or a success message
       const result = await submitApplicationById(
-        currentApplication.backendApplicationId
+        currentApplication.backendApplicationId,
+        { phoneNumber: currentApplication.phoneNumber || null },
       );
 
       console.log("✅ Submit response:", result);
 
-      if (result && result.message) {
-        setCurrentApplication((prev) => ({
-          ...prev,
-          status: APPLICATION_STATUS.SUBMITTED,
-        }));
+      setCurrentApplication((prev) => ({
+        ...prev,
+        status:
+          result?.status?.toLowerCase() ||
+          result?.applicationStatus?.toLowerCase() ||
+          APPLICATION_STATUS.SUBMITTED,
+      }));
 
+      if (
+        result &&
+        (result.message || result.status || result.applicationStatus)
+      ) {
         // If this was a resubmission of a rejected/returned app, mark it locally
         if (preStatus === "rejected" || preStatus === "returned") {
           setClientResubmittedIds((prev) => {
@@ -565,12 +651,12 @@ export const ApplicationProvider = ({ children }) => {
               new Set([
                 ...(prev || []),
                 currentApplication.backendApplicationId,
-              ])
+              ]),
             );
             try {
               sessionStorage.setItem(
                 "mmgt_client_resubmitted_ids",
-                JSON.stringify(next)
+                JSON.stringify(next),
               );
             } catch (err) {
               console.warn("Could not persist client resubmitted ids:", err);
@@ -586,7 +672,7 @@ export const ApplicationProvider = ({ children }) => {
             currentApplication?.backendApplicationId
           ) {
             await loadBackendApplication(
-              currentApplication.backendApplicationId
+              currentApplication.backendApplicationId,
             );
           }
         } catch (err) {
@@ -613,6 +699,20 @@ export const ApplicationProvider = ({ children }) => {
         errorMessage = error.response.data.message;
       } else if (error.message) {
         errorMessage = error.message;
+      }
+
+      if (/an active application already exists/i.test(errorMessage)) {
+        setRsaPinAvailability({
+          exists: true,
+          checked: true,
+          message:
+            "An active application already exists with this RSA PIN. Please verify the RSA PIN and use a different one.",
+          details: null,
+        });
+        setErrors({
+          rsaPin:
+            "An active application already exists with this RSA PIN. Please verify the RSA PIN and use a different one.",
+        });
       }
 
       return {
@@ -693,6 +793,7 @@ export const ApplicationProvider = ({ children }) => {
       middleName: "",
       lastName: "",
       rsaPin: "",
+      phoneNumber: "",
       equityValue: "",
       supplementaryValue: "",
       loanAmount: "",
@@ -703,6 +804,13 @@ export const ApplicationProvider = ({ children }) => {
       status: APPLICATION_STATUS.DRAFT,
     });
     setBackendDocumentCount(0); // Reset backend document count
+    setMandatoryDocumentsStatus({ uploadedCount: 0, totalMandatory: 0 }); // Reset mandatory docs status
+    setRsaPinAvailability({
+      exists: false,
+      checked: false,
+      message: "",
+      details: null,
+    });
     setErrors({});
     setIsSubmitting(false);
   }, [user]);
@@ -730,13 +838,21 @@ export const ApplicationProvider = ({ children }) => {
         ];
         break;
       case FORM_STEPS.UPLOAD_DOCUMENTS:
-        // Check appropriate document source
-        const hasDocuments = currentApplication.backendApplicationId
-          ? backendDocumentCount > 0 // Backend documents
-          : currentApplication.documents &&
-            currentApplication.documents.length > 0; // Local documents
-
-        return hasDocuments;
+        // Check if all mandatory documents are uploaded
+        if (currentApplication.backendApplicationId) {
+          // Backend: all mandatory docs must be uploaded
+          const allMandatoryUploaded =
+            mandatoryDocumentsStatus.totalMandatory > 0 &&
+            mandatoryDocumentsStatus.uploadedCount ===
+              mandatoryDocumentsStatus.totalMandatory;
+          return allMandatoryUploaded;
+        } else {
+          // Local: check if any documents exist (pre-backend creation)
+          return (
+            currentApplication.documents &&
+            currentApplication.documents.length > 0
+          );
+        }
       case FORM_STEPS.CONFIRMATION:
         requiredFields = [
           "firstName",
@@ -748,14 +864,24 @@ export const ApplicationProvider = ({ children }) => {
           "propertyValue",
         ];
 
-        // Also check documents for confirmation
-        const hasConfirmationDocs = currentApplication.backendApplicationId
-          ? backendDocumentCount > 0 // Backend documents
-          : currentApplication.documents &&
-            currentApplication.documents.length > 0; // Local documents
-
-        if (!hasConfirmationDocs) {
-          return false;
+        // Also check all mandatory documents for confirmation
+        if (currentApplication.backendApplicationId) {
+          // Backend: all mandatory docs must be uploaded
+          const allMandatoryForConfirm =
+            mandatoryDocumentsStatus.totalMandatory > 0 &&
+            mandatoryDocumentsStatus.uploadedCount ===
+              mandatoryDocumentsStatus.totalMandatory;
+          if (!allMandatoryForConfirm) {
+            return false;
+          }
+        } else {
+          // Local: check if any documents exist
+          const hasConfirmationDocs =
+            currentApplication.documents &&
+            currentApplication.documents.length > 0;
+          if (!hasConfirmationDocs) {
+            return false;
+          }
         }
         break;
     }
@@ -777,10 +903,17 @@ export const ApplicationProvider = ({ children }) => {
       hasBackendApp: !!currentApplication.backendApplicationId,
       backendDocCount: backendDocumentCount,
       localDocCount: currentApplication.documents?.length || 0,
+      mandatoryDocumentsStatus,
     });
 
     return result;
-  }, [currentStep, currentApplication, backendDocumentCount, errors]);
+  }, [
+    currentStep,
+    currentApplication,
+    backendDocumentCount,
+    errors,
+    mandatoryDocumentsStatus,
+  ]);
 
   const canGoBack = useMemo(() => {
     return currentStep > 1;
@@ -823,6 +956,10 @@ export const ApplicationProvider = ({ children }) => {
     handleBackendDocumentCountChange,
     backendDocumentCount,
 
+    // NEW: Mandatory documents validation handler
+    handleMandatoryDocumentsValidation,
+    mandatoryDocumentsStatus,
+
     // Step navigation
     nextStep,
     previousStep,
@@ -842,6 +979,8 @@ export const ApplicationProvider = ({ children }) => {
     canProceedToNext,
     canGoBack,
     isLastStep,
+    rsaPinAvailability,
+    setRsaPinAvailability,
 
     // Constants
     FORM_STEPS,

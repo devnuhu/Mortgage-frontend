@@ -10,6 +10,7 @@ import api from "./axios-config";
 const ENDPOINTS = {
   applications: "/applications",
   applicationsByUser: (userId) => `/applications/user/${userId}`,
+  applicationsByUserPaged: "/applications/my-applications/paged",
   applicationsByPMI: (pmiCompanyId) => `/applications/pmi/${pmiCompanyId}`,
   applicationById: (id) => `/applications/${id}`,
   createApplication: "/applications",
@@ -19,12 +20,17 @@ const ENDPOINTS = {
 };
 
 /**
- * Get all applications
- * Maps to: GetAllApplicationsAsync()
+ * Get all applications (paginated)
+ * Maps to: GetAllApplicationsPagedAsync()
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages: number, hasNextPage: boolean, hasPreviousPage: boolean}>}
  */
-export const getAllApplications = async () => {
+export const getAllApplications = async (pageNumber = 1, pageSize = 50) => {
   try {
-    const response = await api.get(ENDPOINTS.applications);
+    const response = await api.get(ENDPOINTS.applications, {
+      params: { pageNumber, pageSize },
+    });
     return response.data;
   } catch (error) {
     console.error("Error fetching all applications:", error);
@@ -33,16 +39,26 @@ export const getAllApplications = async () => {
 };
 
 /**
- * Get applications by user ID
- * Maps to: GetApplicationsByUserAsync(Guid userId)
+ * Get applications by user ID (paginated)
+ * Maps to: GetMyApplicationsPagedAsync()
+ * @param {string} userId - User ID
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages: number, hasNextPage: boolean, hasPreviousPage: boolean}>}
  */
-export const getApplicationsByUser = async (userId) => {
+export const getApplicationsByUser = async (
+  userId,
+  pageNumber = 1,
+  pageSize = 50,
+) => {
   if (!userId) {
     throw new Error("User ID is required");
   }
 
   try {
-    const response = await api.get(ENDPOINTS.applicationsByUser(userId));
+    const response = await api.get(ENDPOINTS.applicationsByUserPaged, {
+      params: { pageNumber, pageSize },
+    });
     return response.data;
   } catch (error) {
     console.error(`Error fetching applications for user ${userId}:`, error);
@@ -65,7 +81,7 @@ export const getApplicationsByPMI = async (pmiCompanyId) => {
   } catch (error) {
     console.error(
       `Error fetching applications for PMI ${pmiCompanyId}:`,
-      error
+      error,
     );
     throw new Error(error.message || "Failed to fetch PMI applications");
   }
@@ -120,24 +136,16 @@ export const createApplication = async (userId, applicationData) => {
  * Update application status
  * Maps to: UpdateApplicationStatusAsync(Guid id, Guid reviewerId, UpdateApplicationStatusRequest request)
  */
-export const updateApplicationStatus = async (id, reviewerId, statusData) => {
+export const updateApplicationStatus = async (id, statusData) => {
   if (!id) {
     throw new Error("Application ID is required");
-  }
-  if (!reviewerId) {
-    throw new Error("Reviewer ID is required");
   }
   if (!statusData || !statusData.status) {
     throw new Error("Status data is required");
   }
 
   try {
-    const payload = {
-      reviewerId,
-      ...statusData,
-    };
-
-    const response = await api.put(ENDPOINTS.updateStatus(id), payload);
+    const response = await api.put(ENDPOINTS.updateStatus(id), statusData);
     return response.data;
   } catch (error) {
     console.error(`Error updating application ${id} status:`, error);
@@ -312,7 +320,8 @@ export const filterApplicationsByStatus = (applications, statusFilter) => {
   if (statusFilter === "action_required") {
     return applications.filter(
       (app) =>
-        app.status === ApplicationStatus.RETURNED || app.status === "incomplete"
+        app.status === ApplicationStatus.RETURNED ||
+        app.status === "incomplete",
     );
   }
 
@@ -320,13 +329,13 @@ export const filterApplicationsByStatus = (applications, statusFilter) => {
     return applications.filter(
       (app) =>
         app.status === ApplicationStatus.SUBMITTED ||
-        app.status === ApplicationStatus.UNDER_REVIEW
+        app.status === ApplicationStatus.UNDER_REVIEW,
     );
   }
 
   // Standard status filter
   return applications.filter(
-    (app) => app.status?.toLowerCase() === statusFilter.toLowerCase()
+    (app) => app.status?.toLowerCase() === statusFilter.toLowerCase(),
   );
 };
 
@@ -336,7 +345,7 @@ export const filterApplicationsByStatus = (applications, statusFilter) => {
 export const sortApplications = (
   applications,
   sortBy = "createdAt",
-  sortOrder = "desc"
+  sortOrder = "desc",
 ) => {
   return [...applications].sort((a, b) => {
     let aValue = a[sortBy];
@@ -456,7 +465,7 @@ export const withErrorHandling = async (apiCall, errorContext = "API call") => {
  */
 export const bulkUpdateApplications = async (applicationIds, updateData) => {
   const promises = applicationIds.map((id) =>
-    updateApplicationStatus(id, updateData.reviewerId, updateData)
+    updateApplicationStatus(id, updateData.reviewerId, updateData),
   );
 
   try {

@@ -1,7 +1,7 @@
 import React from "react";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import "@testing-library/jest-dom";
-import { vi } from "vitest";
+import "@testing-library/jest-dom/vitest";
+import { vi, expect, describe, beforeEach, test } from "vitest";
 import Login from "./Login";
 
 // jsx
@@ -48,8 +48,32 @@ describe("Login component", () => {
     expect(screen.getByLabelText(/Email Address/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/Password/i)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /sign in/i })
+      screen.getByRole("button", { name: /sign in/i }),
     ).toBeInTheDocument();
+  });
+
+  test("toggles password visibility when the eye button is clicked", () => {
+    useAuthMock.mockReturnValue({
+      login: vi.fn(),
+      isLoading: false,
+      user: null,
+      requiresPasswordChange: false,
+    });
+
+    render(<Login />);
+
+    const passwordInput = screen.getByLabelText(/Password/i);
+    const toggleButton = screen.getByRole("button", {
+      name: /toggle password visibility/i,
+    });
+
+    expect(passwordInput).toHaveAttribute("type", "password");
+
+    fireEvent.click(toggleButton);
+    expect(passwordInput).toHaveAttribute("type", "text");
+
+    fireEvent.click(toggleButton);
+    expect(passwordInput).toHaveAttribute("type", "password");
   });
 
   test("shows validation errors on empty submit", async () => {
@@ -68,7 +92,7 @@ describe("Login component", () => {
     // validation runs synchronously
     expect(await screen.findByText(/Email is required/i)).toBeInTheDocument();
     expect(
-      await screen.findByText(/Password is required/i)
+      await screen.findByText(/Password is required/i),
     ).toBeInTheDocument();
   });
 
@@ -139,12 +163,12 @@ describe("Login component", () => {
 
     // The component's useEffect should switch to first-login flow on mount
     expect(
-      await screen.findByText(/First Login Detected/i)
+      await screen.findByText(/First Login Detected/i),
     ).toBeInTheDocument();
 
     expect(
       screen.getByText(/Set Your New Password/i) ||
-        screen.getByText(/Please create a secure password/i)
+        screen.getByText(/Please create a secure password/i),
     ).toBeInTheDocument();
   });
 });

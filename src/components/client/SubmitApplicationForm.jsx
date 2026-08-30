@@ -1,8 +1,12 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useApplication } from "../../context/ApplicationContext";
 import { useAuth } from "../../context/AuthContext";
+import {
+  validateRsaPin,
+  checkRsaPinAvailability,
+} from "../../services/application-api";
 import {
   User,
   Mail,
@@ -25,10 +29,19 @@ import ConfirmModal from "../ui/ConfirmModal";
 
 // Step 1: Client Details Component
 const ClientDetailsStep = () => {
-  const { currentApplication, updateApplicationField, errors } =
-    useApplication();
+  const {
+    currentApplication,
+    updateApplicationField,
+    errors,
+    resetForm,
+    rsaPinAvailability,
+    setRsaPinAvailability,
+  } = useApplication();
   const { user } = useAuth(); // Get logged-in user data
-  const [showRSAPin, setShowRSAPin] = useState(false);
+  const [rsaValidationLoading, setRsaValidationLoading] = useState(false);
+  const [rsaValidationError, setRsaValidationError] = useState("");
+  const [rsaValidationSuccess, setRsaValidationSuccess] = useState(false);
+  const [rsaAvailabilityLoading, setRsaAvailabilityLoading] = useState(false);
 
   // Auto-populate PMI data from user when component mounts
   useEffect(() => {
@@ -112,8 +125,225 @@ const ClientDetailsStep = () => {
     });
   };
 
+  const validateRsaPinValue = useCallback(
+    async (pin) => {
+      // No PIN entered: clear any local validation message and bail out
+      if (!pin) {
+        setRsaValidationSuccess(false);
+        setRsaValidationError("");
+        setRsaPinAvailability({
+          exists: false,
+          checked: false,
+          message: "",
+          details: null,
+        });
+        return;
+      }
+
+      // Syntactic validation: require PEN + 12 uppercase alphanumerics
+      if (!/^PEN[A-Z0-9]{12}$/.test(pin)) {
+        setRsaValidationSuccess(false);
+        setRsaValidationError(
+          "Enter a valid RSA PIN: PEN followed by 12 letters or numbers.",
+        );
+        setRsaPinAvailability({
+          exists: false,
+          checked: false,
+          message: "",
+          details: null,
+        });
+        return;
+      }
+
+      setRsaValidationError("");
+      setRsaValidationLoading(true);
+      setRsaValidationSuccess(false);
+
+      try {
+        const response = await validateRsaPin(pin);
+        // GetBiodata endpoint returns data directly (fname, mname, rsapin, title)
+        // Check if we have valid response data with fname field
+        if (response?.fname) {
+          const validatedData = response;
+          updateApplicationField("firstName", validatedData.fname || "");
+          updateApplicationField("middleName", validatedData.mname || "");
+          updateApplicationField("lastName", validatedData.lname || "");
+          // Auto-populate phone number if available from RSA validation
+          updateApplicationField(
+            "phoneNumber",
+            validatedData.phoneNumber ||
+              validatedData.phonenumber ||
+              validatedData.phone ||
+              validatedData.msisdn ||
+              validatedData.mobile ||
+              "",
+          );
+          setRsaValidationSuccess(true);
+        } else {
+          // Show friendly message from server if available, otherwise a generic one
+          setRsaValidationError(
+            response?.message || "No active RSA account found for this PIN.",
+          );
+        }
+      } catch (error) {
+        const status = error?.response?.status;
+        const serverMsg = error?.response?.data?.message || error?.message;
+
+        if (status === 400 || /status code 400/i.test(error?.message || "")) {
+          // Map backend 400 to a friendly, domain-specific message
+          setRsaValidationError("Please enter a valid Access Arm RSA PIN");
+        } else {
+          setRsaValidationError(
+            serverMsg ||
+              "Unable to verify PIN right now. Check your connection and try again.",
+          );
+        }
+      } finally {
+        setRsaValidationLoading(false);
+      }
+    },
+    [setRsaPinAvailability, updateApplicationField],
+  );
+
+  const checkDuplicateRsaPin = useCallback(
+    async (pin) => {
+      const hasExistingApplicationRecord = Boolean(
+        currentApplication.backendApplicationId,
+      );
+
+      if (!pin) {
+        setRsaPinAvailability({
+          exists: false,
+          checked: false,
+          message: "",
+          details: null,
+        });
+        return false;
+      }
+
+      // Only perform the uniqueness check for brand-new applications.
+      // Existing applications being edited, rejected, or resubmitted already
+      // belong to this RSA PIN and should not trigger the create-only validation.
+      if (hasExistingApplicationRecord) {
+        setRsaPinAvailability({
+          exists: false,
+          checked: true,
+          message: "",
+          details: null,
+        });
+        return false;
+      }
+
+      if (!/^PEN[A-Z0-9]{12}$/.test(pin)) {
+        setRsaPinAvailability({
+          exists: false,
+          checked: false,
+          message: "",
+          details: null,
+        });
+        return false;
+      }
+
+      setRsaAvailabilityLoading(true);
+      try {
+        const availability = await checkRsaPinAvailability(pin);
+        const duplicate = !!availability?.exists;
+        setRsaPinAvailability({
+          exists: duplicate,
+          checked: true,
+          message: availability?.message || "",
+          details: duplicate
+            ? {
+                applicationId: availability?.applicationId,
+                applicationNumber: availability?.applicationNumber,
+                status: availability?.status,
+                borrowerName: availability?.borrowerName,
+              }
+            : null,
+        });
+        return duplicate;
+      } catch (error) {
+        const message =
+          error?.message || "Unable to verify RSA PIN availability.";
+        setRsaPinAvailability({
+          exists: false,
+          checked: true,
+          message,
+          details: null,
+        });
+        return false;
+      } finally {
+        setRsaAvailabilityLoading(false);
+      }
+    },
+    [
+      currentApplication.backendApplicationId,
+      currentApplication.status,
+      setRsaPinAvailability,
+    ],
+  );
+
+  const handleRSAPinBlur = async () => {
+    const pin = currentApplication.rsaPin?.trim();
+    await validateRsaPinValue(pin);
+    await checkDuplicateRsaPin(pin);
+  };
+
+  const handleRefreshFields = () => {
+    resetForm();
+    setRsaValidationError("");
+    setRsaValidationSuccess(false);
+    setRsaValidationLoading(false);
+    setRsaPinAvailability({
+      exists: false,
+      checked: false,
+      message: "",
+      details: null,
+    });
+  };
+
+  useEffect(() => {
+    const pin = currentApplication.rsaPin?.trim();
+    if (
+      !pin ||
+      !/^PEN[A-Z0-9]{12}$/.test(pin) ||
+      rsaValidationLoading ||
+      rsaValidationSuccess ||
+      rsaValidationError // stop auto-validation while a friendly error is shown
+    ) {
+      if (
+        pin &&
+        /^PEN[A-Z0-9]{12}$/.test(pin) &&
+        !rsaValidationLoading &&
+        !rsaValidationSuccess &&
+        !rsaValidationError
+      ) {
+        void checkDuplicateRsaPin(pin);
+      }
+      return;
+    }
+
+    void validateRsaPinValue(pin);
+    void checkDuplicateRsaPin(pin);
+  }, [
+    currentApplication.rsaPin,
+    rsaValidationLoading,
+    rsaValidationSuccess,
+    rsaValidationError,
+    validateRsaPinValue,
+    checkDuplicateRsaPin,
+  ]);
+
   return (
     <div className="space-y-6">
+      {errors.general && (
+        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-700">
+          <div className="flex items-start gap-2">
+            <AlertCircle className="h-5 w-5 mt-0.5" />
+            <p>{errors.general}</p>
+          </div>
+        </div>
+      )}
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <div className="flex items-center space-x-3 mb-6">
           <User className="h-6 w-6 text-[#A8C045]" />
@@ -182,28 +412,98 @@ const ClientDetailsStep = () => {
               value={currentApplication.rsaPin?.replace(/^PEN/, "") || ""} // Remove PEN for display
               onChange={(e) => {
                 const value = e.target.value.replace(/[^A-Z0-9]/g, ""); // Only allow alphanumeric
+                setRsaValidationError("");
+                setRsaValidationSuccess(false);
                 updateApplicationField("rsaPin", "PEN" + value); // Add PEN prefix before saving
               }}
+              onBlur={handleRSAPinBlur}
               placeholder="123456780000"
               maxLength={12}
+              disabled={rsaValidationSuccess}
               className={`w-full pl-12 pr-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.rsaPin ? "border-red-300 bg-red-50" : "border-gray-300"
+                errors.rsaPin
+                  ? "border-red-300 bg-red-50"
+                  : rsaValidationSuccess
+                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
           </div>
           <p className="text-xs text-gray-500 mt-1">
             Enter 12 characters after PEN (letters and numbers only)
           </p>
+          {rsaValidationLoading && (
+            <p className="text-sm text-slate-500 mt-1">Validating RSA PIN…</p>
+          )}
+          {rsaValidationSuccess && !rsaValidationLoading && (
+            <p className="text-sm text-green-600 mt-1">
+              RSA PIN validated and name fields auto-populated.
+            </p>
+          )}
+          {rsaPinAvailability.checked && rsaPinAvailability.exists && (
+            <div className="mt-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="h-4 w-4 mt-0.5" />
+                <div>
+                  <p className="font-medium">RSA PIN already in use</p>
+                  <p>{rsaPinAvailability.message}</p>
+                  {rsaPinAvailability.details && (
+                    <ul className="mt-2 space-y-1 text-xs">
+                      {rsaPinAvailability.details.applicationNumber && (
+                        <li>
+                          Application:{" "}
+                          {rsaPinAvailability.details.applicationNumber}
+                        </li>
+                      )}
+                      {rsaPinAvailability.details.borrowerName && (
+                        <li>
+                          Borrower: {rsaPinAvailability.details.borrowerName}
+                        </li>
+                      )}
+                      {rsaPinAvailability.details.status && (
+                        <li>Status: {rsaPinAvailability.details.status}</li>
+                      )}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          {!rsaPinAvailability.exists &&
+            rsaPinAvailability.checked &&
+            rsaPinAvailability.message && (
+              <p className="text-sm text-green-600 mt-2 flex items-center">
+                <CheckCircle className="h-4 w-4 mr-1" />
+                {rsaPinAvailability.message}
+              </p>
+            )}
+          {rsaValidationError && (
+            <p className="text-red-600 text-sm mt-1 flex items-center">
+              <AlertCircle className="h-4 w-4 mr-1" />
+              {rsaValidationError}
+            </p>
+          )}
           {errors.rsaPin && (
             <p className="text-red-600 text-sm mt-1 flex items-center">
               <AlertCircle className="h-4 w-4 mr-1" />
               {errors.rsaPin}
             </p>
           )}
+          {(errors.rsaPin ||
+            rsaValidationError ||
+            (rsaPinAvailability.checked && rsaPinAvailability.exists)) && (
+            <button
+              type="button"
+              onClick={handleRefreshFields}
+              className="mt-3 inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-2 text-sm font-medium text-[#A8C045] hover:bg-gray-50"
+            >
+              Enter a different PIN
+            </button>
+          )}
         </div>
 
         {/* Name Fields */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-6">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               First Name *
@@ -215,10 +515,13 @@ const ClientDetailsStep = () => {
                 updateApplicationField("firstName", e.target.value)
               }
               placeholder="Enter first name"
+              disabled={rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.firstName
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : rsaValidationSuccess
+                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.firstName && (
@@ -240,10 +543,13 @@ const ClientDetailsStep = () => {
                 updateApplicationField("middleName", e.target.value)
               }
               placeholder="Enter middle name (optional)"
+              disabled={rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.middleName
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : rsaValidationSuccess
+                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.middleName && (
@@ -265,14 +571,47 @@ const ClientDetailsStep = () => {
                 updateApplicationField("lastName", e.target.value)
               }
               placeholder="Enter last name"
+              disabled={rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.lastName ? "border-red-300 bg-red-50" : "border-gray-300"
+                errors.lastName
+                  ? "border-red-300 bg-red-50"
+                  : rsaValidationSuccess
+                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.lastName && (
               <p className="text-red-600 text-sm mt-1 flex items-center">
                 <AlertCircle className="h-4 w-4 mr-1" />
                 {errors.lastName}
+              </p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Phone Number
+            </label>
+            <input
+              type="tel"
+              value={currentApplication.phoneNumber || ""}
+              onChange={(e) =>
+                updateApplicationField("phoneNumber", e.target.value)
+              }
+              placeholder="Enter phone number"
+              disabled={rsaValidationSuccess}
+              className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
+                errors.phoneNumber
+                  ? "border-red-300 bg-red-50"
+                  : rsaValidationSuccess
+                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
+              }`}
+            />
+            {errors.phoneNumber && (
+              <p className="text-red-600 text-sm mt-1 flex items-center">
+                <AlertCircle className="h-4 w-4 mr-1" />
+                {errors.phoneNumber}
               </p>
             )}
           </div>
@@ -295,12 +634,12 @@ const ClientDetailsStep = () => {
               type="text"
               value={
                 focused.equityValue
-                  ? rawInputs.equityValue ??
+                  ? (rawInputs.equityValue ??
                     currentApplication.equityValue ??
-                    ""
+                    "")
                   : currentApplication.equityValue
-                  ? formatCurrency(currentApplication.equityValue)
-                  : ""
+                    ? formatCurrency(currentApplication.equityValue)
+                    : ""
               }
               onFocus={() => handleCurrencyFocus("equityValue")}
               onBlur={() => handleCurrencyBlur("equityValue")}
@@ -308,10 +647,13 @@ const ClientDetailsStep = () => {
                 handleCurrencyInputChange("equityValue", e.target.value)
               }
               placeholder="₦0"
+              disabled={!rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.equityValue
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : !rsaValidationSuccess
+                    ? "border-slate-200 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.equityValue && (
@@ -330,12 +672,12 @@ const ClientDetailsStep = () => {
               type="text"
               value={
                 focused.supplementaryValue
-                  ? rawInputs.supplementaryValue ??
+                  ? (rawInputs.supplementaryValue ??
                     currentApplication.supplementaryValue ??
-                    ""
+                    "")
                   : currentApplication.supplementaryValue
-                  ? formatCurrency(currentApplication.supplementaryValue)
-                  : ""
+                    ? formatCurrency(currentApplication.supplementaryValue)
+                    : ""
               }
               onFocus={() => handleCurrencyFocus("supplementaryValue")}
               onBlur={() => handleCurrencyBlur("supplementaryValue")}
@@ -343,10 +685,13 @@ const ClientDetailsStep = () => {
                 handleCurrencyInputChange("supplementaryValue", e.target.value)
               }
               placeholder="₦0"
+              disabled={!rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.supplementaryValue
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : !rsaValidationSuccess
+                    ? "border-slate-200 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             <p className="text-xs text-gray-500 mt-1">
@@ -368,10 +713,12 @@ const ClientDetailsStep = () => {
               type="text"
               value={
                 focused.loanAmount
-                  ? rawInputs.loanAmount ?? currentApplication.loanAmount ?? ""
+                  ? (rawInputs.loanAmount ??
+                    currentApplication.loanAmount ??
+                    "")
                   : currentApplication.loanAmount
-                  ? formatCurrency(currentApplication.loanAmount)
-                  : ""
+                    ? formatCurrency(currentApplication.loanAmount)
+                    : ""
               }
               onFocus={() => handleCurrencyFocus("loanAmount")}
               onBlur={() => handleCurrencyBlur("loanAmount")}
@@ -379,10 +726,13 @@ const ClientDetailsStep = () => {
                 handleCurrencyInputChange("loanAmount", e.target.value)
               }
               placeholder="₦0"
+              disabled={!rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.loanAmount
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : !rsaValidationSuccess
+                    ? "border-slate-200 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.loanAmount && (
@@ -401,12 +751,12 @@ const ClientDetailsStep = () => {
               type="text"
               value={
                 focused.propertyValue
-                  ? rawInputs.propertyValue ??
+                  ? (rawInputs.propertyValue ??
                     currentApplication.propertyValue ??
-                    ""
+                    "")
                   : currentApplication.propertyValue
-                  ? formatCurrency(currentApplication.propertyValue)
-                  : ""
+                    ? formatCurrency(currentApplication.propertyValue)
+                    : ""
               }
               onFocus={() => handleCurrencyFocus("propertyValue")}
               onBlur={() => handleCurrencyBlur("propertyValue")}
@@ -414,10 +764,13 @@ const ClientDetailsStep = () => {
                 handleCurrencyInputChange("propertyValue", e.target.value)
               }
               placeholder="₦0"
+              disabled={!rsaValidationSuccess}
               className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
                 errors.propertyValue
                   ? "border-red-300 bg-red-50"
-                  : "border-gray-300"
+                  : !rsaValidationSuccess
+                    ? "border-slate-200 bg-slate-100 cursor-not-allowed"
+                    : "border-gray-300"
               }`}
             />
             {errors.propertyValue && (
@@ -440,8 +793,8 @@ const UploadDocumentsStep = () => {
     addDocument,
     removeDocument,
     errors,
-    updateApplicationField,
     handleBackendDocumentCountChange, // NEW: Get the callback from context
+    handleMandatoryDocumentsValidation, // NEW: Get mandatory docs validation callback
   } = useApplication();
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -497,6 +850,7 @@ const UploadDocumentsStep = () => {
             applicationStatus={currentApplication.status}
             defaultDocumentType="identity_document"
             onDocumentCountChange={handleBackendDocumentCountChange} // NEW: Pass the callback
+            onMandatoryDocumentsChange={handleMandatoryDocumentsValidation} // NEW: Pass mandatory docs callback
           />
         ) : (
           <>
@@ -506,8 +860,8 @@ const UploadDocumentsStep = () => {
                 isDragOver
                   ? "border-[#A8C045] bg-green-50"
                   : errors.documents
-                  ? "border-red-300 bg-red-50"
-                  : "border-gray-300 hover:border-[#A8C045] hover:bg-green-50"
+                    ? "border-red-300 bg-red-50"
+                    : "border-gray-300 hover:border-[#A8C045] hover:bg-green-50"
               }`}
               onDrop={handleDrop}
               onDragOver={(e) => {
@@ -537,7 +891,8 @@ const UploadDocumentsStep = () => {
                     </label>
                   </p>
                   <p className="text-gray-500 mt-2">
-                    Supported formats: PDF (Max 10MB each)
+                    Supported formats: PDF (500 KB standard, 1 MB for
+                    confirmation/property title documents)
                   </p>
                 </div>
               </div>
@@ -595,8 +950,15 @@ const UploadDocumentsStep = () => {
 
 // Step 3: Confirmation Component
 const ConfirmationStep = () => {
-  const { currentApplication, errors } = useApplication();
+  const { currentApplication, errors, backendDocumentCount } = useApplication();
   const { user } = useAuth(); // Get logged-in user data for PMI review
+
+  const documentCount = currentApplication.backendApplicationId
+    ? backendDocumentCount
+    : currentApplication.documents?.length || 0;
+
+  const hasLocalDocuments =
+    currentApplication.documents && currentApplication.documents.length > 0;
 
   const formatCurrency = (value) => {
     if (!value && value !== 0) return "Not specified";
@@ -657,7 +1019,7 @@ const ConfirmationStep = () => {
           <CreditCard className="h-5 w-5 mr-2 text-[#A8C045]" />
           Borrower Information
         </h4>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
           <div>
             <span className="text-gray-500">RSA Pin:</span>
             <p className="font-medium">
@@ -676,6 +1038,12 @@ const ConfirmationStep = () => {
               ]
                 .filter(Boolean)
                 .join(" ") || "Not specified"}
+            </p>
+          </div>
+          <div>
+            <span className="text-gray-500">Phone Number:</span>
+            <p className="font-medium">
+              {currentApplication.phoneNumber || "Not specified"}
             </p>
           </div>
         </div>
@@ -733,30 +1101,36 @@ const ConfirmationStep = () => {
       <div className="bg-white rounded-lg border border-gray-200 p-6">
         <h4 className="font-semibold text-gray-900 mb-4 flex items-center">
           <FileText className="h-5 w-5 mr-2 text-[#A8C045]" />
-          Uploaded Documents ({currentApplication.documents?.length || 0})
+          Uploaded Documents ({documentCount})
         </h4>
-        {currentApplication.documents &&
-        currentApplication.documents.length > 0 ? (
+        {documentCount > 0 ? (
           <div className="space-y-2">
-            {currentApplication.documents.map((doc, index) => (
-              <div
-                key={doc.id}
-                className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-              >
-                <div className="flex items-center space-x-3">
-                  <FileText className="h-5 w-5 text-gray-600" />
-                  <div>
-                    <p className="font-medium text-sm">{doc.name}</p>
-                    <p className="text-xs text-gray-500">
-                      {formatFileSize(doc.size)}
-                    </p>
+            {hasLocalDocuments ? (
+              currentApplication.documents.map((doc) => (
+                <div
+                  key={doc.id}
+                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                >
+                  <div className="flex items-center space-x-3">
+                    <FileText className="h-5 w-5 text-gray-600" />
+                    <div>
+                      <p className="font-medium text-sm">{doc.name}</p>
+                      <p className="text-xs text-gray-500">
+                        {formatFileSize(doc.size)}
+                      </p>
+                    </div>
                   </div>
+                  <span className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
+                    Ready to submit
+                  </span>
                 </div>
-                <span className="text-xs text-green-600 bg-green-100 px-2 py-1 rounded-full">
-                  Ready to submit
-                </span>
+              ))
+            ) : (
+              <div className="p-4 bg-gray-50 rounded-lg text-sm text-gray-600">
+                Documents are stored on the server for this application. Please
+                review them in the Upload Documents step.
               </div>
-            ))}
+            )}
           </div>
         ) : (
           <p className="text-gray-500 text-center py-4">
@@ -809,6 +1183,7 @@ const SubmitApplicationForm = () => {
     FORM_STEPS,
     TOTAL_STEPS,
     loadBackendApplication,
+    rsaPinAvailability,
   } = useApplication();
 
   const location = useLocation();
@@ -909,7 +1284,7 @@ const SubmitApplicationForm = () => {
   // Success Screen
   if (isSubmitted && submissionResult?.success) {
     return (
-      <div className="max-w-2xl mx-auto">
+      <div className="w-full max-w-[1500px] mx-auto px-3 sm:px-4 lg:px-6 xl:px-8">
         <div className="bg-white rounded-lg border border-gray-200 p-8 text-center">
           <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-6">
             <CheckCircle className="h-10 w-10 text-green-600" />
@@ -944,12 +1319,12 @@ const SubmitApplicationForm = () => {
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="w-full max-w-[1500px] mx-auto px-3 sm:px-4 lg:px-6 xl:px-8">
       {/* Resubmitted confirmation modal */}
       <ConfirmModal
         isOpen={showResubmittedModal}
         title="Application Resubmitted"
-        message="Your application was successfully resubmitted. You will find it in your Pending Applications list."
+        message="Your application has been resubmitted and is pending review. You can track it in your Pending Applications list."
         onConfirm={handleResubmittedOk}
         onCancel={() => {
           setShowResubmittedModal(false);
@@ -999,8 +1374,8 @@ const SubmitApplicationForm = () => {
                       isCompleted
                         ? "bg-[#A8C045] text-white"
                         : isActive
-                        ? "bg-[#A8C045] text-white"
-                        : "bg-gray-200 text-gray-500"
+                          ? "bg-[#A8C045] text-white"
+                          : "bg-gray-200 text-gray-500"
                     }`}
                   >
                     {isCompleted ? (
@@ -1049,7 +1424,9 @@ const SubmitApplicationForm = () => {
             {!isLastStep && (
               <button
                 onClick={handleNext}
-                disabled={!canProceedToNext || isSubmitting}
+                disabled={
+                  !canProceedToNext || isSubmitting || rsaPinAvailability.exists
+                }
                 className="flex items-center space-x-2 font-medium py-3 px-6 rounded-lg transition-colors bg-[#A8C045] hover:bg-green-600 text-white disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (
@@ -1069,7 +1446,9 @@ const SubmitApplicationForm = () => {
             {isLastStep && (
               <button
                 onClick={handleSubmit}
-                disabled={isSubmitting || !canProceedToNext}
+                disabled={
+                  isSubmitting || !canProceedToNext || rsaPinAvailability.exists
+                }
                 className="flex items-center space-x-2 font-medium py-3 px-8 rounded-lg transition-colors bg-[#A8C045] hover:bg-green-600 text-white disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? (

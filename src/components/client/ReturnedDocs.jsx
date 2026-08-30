@@ -1,63 +1,59 @@
-import React, { useEffect, useState, useRef } from "react";
-import { useNavigate } from "react-router-dom";
-import {
-  FileText,
-  X,
-  CheckCircle,
-  Loader,
-  Download,
-  ArrowRight,
-} from "lucide-react";
-import {
-  getMyApplications,
-  getApplicationDocuments,
-  getApplicationReviewHistory,
-  getApplicationById,
-} from "../../services/application-api";
-import {
-  replaceFileById,
-  downloadFile,
-  triggerFileDownload,
-  submitApplicationById,
-} from "../../services/api";
-import toast from "react-hot-toast";
+import React, { useEffect, useMemo, useState } from "react";
+import { FileText, Loader, Search, ArrowLeft, ArrowRight } from "lucide-react";
+import { getMyRejectedApplications } from "../../services/application-api";
 
 const ReturnedDocs = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [applications, setApplications] = useState([]);
-  const [documentsMap, setDocumentsMap] = useState({});
-  const [selectedApp, setSelectedApp] = useState(null);
-  const [showModal, setShowModal] = useState(false);
-  const [replacingMap, setReplacingMap] = useState({});
-  const [reviewHistoryMap, setReviewHistoryMap] = useState({});
-  const historyRef = useRef(null);
-  const navigate = useNavigate();
+  const [allRejectedApplications, setAllRejectedApplications] = useState([]);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageSize] = useState(50);
+  const [paginationInfo, setPaginationInfo] = useState({
+    totalPages: 1,
+    totalCount: 0,
+    hasNextPage: false,
+    hasPreviousPage: false,
+  });
 
   useEffect(() => {
-    loadApplications();
-  }, []);
+    if (!searchTerm.trim()) {
+      loadApplications(pageNumber);
+    }
+  }, [pageNumber, searchTerm]);
 
-  const loadApplications = async () => {
+  useEffect(() => {
+    if (searchTerm.trim()) {
+      if (allRejectedApplications.length === 0) {
+        loadAllRejectedApplications();
+      }
+      setPageNumber(1);
+    }
+  }, [searchTerm]);
+
+  const loadApplications = async (page = 1) => {
     try {
       setLoading(true);
-      const data = await getMyApplications();
-      setApplications(data || []);
+      setError(null);
+      const response = await getMyRejectedApplications(page, pageSize);
+      const pagePayload = response?.data || response;
+      const data = Array.isArray(pagePayload)
+        ? pagePayload
+        : pagePayload.data || [];
 
-      // Preload documents for each application in parallel (keeps UI snappy)
-      const docsPromises = (data || []).map((app) =>
-        getApplicationDocuments(app.id).then((docs) => ({ id: app.id, docs }))
-      );
+      const normalizedApps = (data || []).map((app) => ({
+        ...app,
+        documents: Array.isArray(app.documents) ? app.documents : [],
+      }));
 
-      const docsResults = await Promise.allSettled(docsPromises);
-      const map = {};
-      docsResults.forEach((r) => {
-        if (r.status === "fulfilled") {
-          map[r.value.id] = r.value.docs || [];
-          console.debug("Loaded docs for app", r.value.id, map[r.value.id]);
-        }
+      setApplications(normalizedApps);
+      setPaginationInfo({
+        totalPages: pagePayload.totalPages || 1,
+        totalCount: pagePayload.totalCount || normalizedApps.length,
+        hasNextPage: pagePayload.hasNextPage || false,
+        hasPreviousPage: pagePayload.hasPreviousPage || false,
       });
-      setDocumentsMap(map);
     } catch (err) {
       console.error("Failed to load returned docs apps:", err);
       setError("Failed to load returned documents. Please try again.");
@@ -66,132 +62,87 @@ const ReturnedDocs = () => {
     }
   };
 
+  const loadAllRejectedApplications = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await getMyRejectedApplications(1, 1000);
+      const pagePayload = response?.data || response;
+      const data = Array.isArray(pagePayload)
+        ? pagePayload
+        : pagePayload.data || [];
+      const normalizedApps = (data || []).map((app) => ({
+        ...app,
+        documents: Array.isArray(app.documents) ? app.documents : [],
+      }));
+      setAllRejectedApplications(normalizedApps);
+    } catch (err) {
+      console.error("Failed to load all rejected applications:", err);
+      setError("Failed to search rejected applications. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const getRejectedCount = (app) => {
-    const docs = documentsMap[app.id] || [];
-    const byDocStatus = docs.filter(
-      (d) => (d.status || "").toLowerCase() === "rejected"
+    const docs = Array.isArray(app.documents) ? app.documents : [];
+    return docs.filter(
+      (d) => (d.reviewStatus || "").toLowerCase() === "rejected",
     ).length;
-    if (byDocStatus > 0) return byDocStatus;
-    // fallback: inspect review history for rejected entries
-    const history = reviewHistoryMap[app.id] || [];
-    return history.filter((h) => (h.status || "").toLowerCase() === "rejected")
-      .length;
   };
 
-  const attentionApps = applications.filter((a) => {
-    const st = (a.status || "").toLowerCase();
-    return (
-      st === "returned" ||
-      st === "rejected" ||
-      (documentsMap[a.id] || []).some(
-        (d) => (d.status || "").toLowerCase() === "rejected"
-      )
-    );
-  });
+  const filteredRejectedApplications = useMemo(() => {
+    const lowerSearch = searchTerm.toLowerCase().trim();
+    if (!lowerSearch) return [];
 
-  const openModal = async (app) => {
-    setSelectedApp(app);
-    setShowModal(true);
+    return (allRejectedApplications || []).filter((app) => {
+      const fullName =
+        `${app.firstName || ""} ${app.lastName || ""}`.toLowerCase();
+      const rsaPin = (app.rsaPin || "").toString().toLowerCase();
+      const appNumber = (app.applicationNumber || app.id || "")
+        .toString()
+        .toLowerCase();
 
-    // ensure documents loaded
-    if (!documentsMap[app.id]) {
-      try {
-        const docs = await getApplicationDocuments(app.id);
-        console.debug("Loaded docs for modal open", app.id, docs);
-        setDocumentsMap((prev) => ({ ...prev, [app.id]: docs }));
-      } catch (err) {
-        console.error("Failed to load documents for app:", err);
-        setDocumentsMap((prev) => ({ ...prev, [app.id]: [] }));
-      }
-    }
+      return (
+        appNumber.includes(lowerSearch) ||
+        fullName.includes(lowerSearch) ||
+        rsaPin.includes(lowerSearch)
+      );
+    });
+  }, [allRejectedApplications, searchTerm]);
 
-    // load review history for this application (if not already loaded)
-    if (!reviewHistoryMap[app.id]) {
-      try {
-        const history = await getApplicationReviewHistory(app.id);
-        setReviewHistoryMap((prev) => ({ ...prev, [app.id]: history }));
-      } catch (err) {
-        console.warn("No review history available for app", app.id, err);
-        setReviewHistoryMap((prev) => ({ ...prev, [app.id]: [] }));
-      }
-    }
-  };
+  const totalSearchPages = Math.max(
+    1,
+    Math.ceil(filteredRejectedApplications.length / pageSize),
+  );
 
-  const closeModal = () => {
-    setShowModal(false);
-    setSelectedApp(null);
-  };
+  const currentPageApplications = useMemo(() => {
+    if (!searchTerm.trim()) return applications;
+    const start = (pageNumber - 1) * pageSize;
+    return filteredRejectedApplications.slice(start, start + pageSize);
+  }, [
+    applications,
+    filteredRejectedApplications,
+    pageNumber,
+    pageSize,
+    searchTerm,
+  ]);
 
-  const onReplaceClick = (docId) => {
-    // open file picker
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = ".pdf";
-    input.onchange = async (e) => {
-      const file = e.target.files?.[0];
-      if (!file) return;
-      if (file.type !== "application/pdf") {
-        toast.error("Only PDF files are allowed");
-        return;
-      }
+  const currentTotalCount = searchTerm.trim()
+    ? filteredRejectedApplications.length
+    : paginationInfo.totalCount;
 
-      try {
-        setReplacingMap((p) => ({ ...p, [docId]: true }));
-        await replaceFileById(docId, file);
-        toast.success("Document replaced successfully");
+  const currentTotalPages = searchTerm.trim()
+    ? totalSearchPages
+    : paginationInfo.totalPages;
 
-        // After successful replace, do NOT auto-submit. Let the user manually submit.
-        toast.success(
-          "Document replaced successfully. Please use Edit & Resubmit to send the application for review."
-        );
+  const hasNextPage = searchTerm.trim()
+    ? pageNumber < totalSearchPages
+    : paginationInfo.hasNextPage;
 
-        // reload documents for selected app
-        if (selectedApp) {
-          const docs = await getApplicationDocuments(selectedApp.id);
-          setDocumentsMap((prev) => ({ ...prev, [selectedApp.id]: docs }));
+  const hasPreviousPage = pageNumber > 1;
 
-          // refresh application status from backend in case server updated it
-          try {
-            const updated = await getApplicationById(selectedApp.id);
-            if (updated) {
-              setSelectedApp(updated);
-              // refresh the overall applications list so counts/status update
-              await loadApplications();
-            }
-          } catch (err) {
-            console.warn("Could not refresh application after replace:", err);
-          }
-          // Explicitly reload review history and scroll the modal to the history section
-          try {
-            const history = await getApplicationReviewHistory(selectedApp.id);
-            setReviewHistoryMap((prev) => ({
-              ...prev,
-              [selectedApp.id]: history || [],
-            }));
-            // scroll to history area so user sees the updated entry
-            if (historyRef.current) {
-              historyRef.current.scrollIntoView({
-                behavior: "smooth",
-                block: "start",
-              });
-            }
-          } catch (err) {
-            console.warn(
-              "Could not refresh review history after replace:",
-              err
-            );
-          }
-        }
-      } catch (err) {
-        console.error("Replace failed:", err);
-        toast.error(err.message || "Failed to replace document");
-      } finally {
-        setReplacingMap((p) => ({ ...p, [docId]: false }));
-      }
-    };
-
-    input.click();
-  };
+  const attentionApps = currentPageApplications;
 
   if (loading) {
     return (
@@ -209,6 +160,16 @@ const ReturnedDocs = () => {
     );
   }
 
+  const handlePreviousPage = () => {
+    setPageNumber((prev) => Math.max(prev - 1, 1));
+  };
+
+  const handleNextPage = () => {
+    if (hasNextPage) {
+      setPageNumber((prev) => prev + 1);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-lg shadow p-6">
@@ -217,6 +178,29 @@ const ReturnedDocs = () => {
           Applications that require your attention due to missing or rejected
           documents.
         </p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-4 space-y-4">
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <label className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-2 w-full md:w-96">
+            <Search className="w-4 h-4 text-gray-500" />
+            <input
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Search by application no. or name"
+              className="w-full bg-transparent text-sm outline-none"
+            />
+          </label>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => loadApplications(pageNumber)}
+              className="px-4 py-2 rounded-lg bg-[#A8C045] text-white text-sm hover:bg-green-600"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
       </div>
 
       <div className="bg-white rounded-lg shadow">
@@ -237,13 +221,18 @@ const ReturnedDocs = () => {
                   className="flex items-center justify-between p-4 border rounded-lg"
                 >
                   <div>
-                    <div className="flex items-center space-x-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <div className="text-sm font-medium">
                         {app.applicationNumber || app.id}
                       </div>
                       <div className="text-sm text-gray-500">
                         {app.firstName} {app.lastName}
                       </div>
+                      {app.rsaPin && (
+                        <div className="text-xs font-medium text-gray-500 bg-gray-100 rounded-full px-2 py-1">
+                          RSA PIN: {app.rsaPin}
+                        </div>
+                      )}
                     </div>
                     <div className="text-xs text-gray-500 mt-1">
                       Status: {app.status}
@@ -255,171 +244,45 @@ const ReturnedDocs = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center space-x-3">
-                    <button
-                      onClick={() => openModal(app)}
-                      className="px-3 py-2 bg-white border rounded-md text-sm hover:bg-gray-50"
-                    >
-                      View
-                    </button>
-                    <button
-                      onClick={() =>
-                        navigate("/client/submit-application", {
-                          state: { appId: app.id },
-                        })
-                      }
-                      className="px-3 py-2 bg-[#A8C045] text-white rounded-md text-sm hover:bg-green-600"
-                    >
-                      Edit & Resubmit
-                    </button>
+                  <div className="text-sm text-gray-500">
+                    {getRejectedCount(app) > 0 && (
+                      <span>{getRejectedCount(app)} rejected document(s)</span>
+                    )}
                   </div>
                 </li>
               ))}
             </ul>
           </div>
         )}
-      </div>
 
-      {/* Modal */}
-      {showModal && selectedApp && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black opacity-40" />
-          <div className="bg-white rounded-lg shadow-lg max-w-3xl w-full p-6 z-10">
-            <div className="flex justify-between items-start">
-              <div>
-                <h3 className="text-lg font-semibold">
-                  Application {selectedApp.applicationNumber || selectedApp.id}
-                </h3>
-                <p className="text-sm text-gray-500">
-                  {selectedApp.firstName} {selectedApp.lastName}
-                </p>
-              </div>
-              <button
-                onClick={closeModal}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                <X />
-              </button>
-            </div>
-
-            <div className="mt-4">
-              <h4 className="font-medium">Documents</h4>
-              <div className="mt-2 space-y-2">
-                {(documentsMap[selectedApp.id] || []).map((doc) => (
-                  <div
-                    key={doc.id}
-                    className="flex items-center justify-between p-3 border rounded-md"
-                  >
-                    <div>
-                      <div className="font-medium">
-                        {doc.fileName || doc.name || doc.name}
-                      </div>
-                      <div className="text-xs text-gray-500">
-                        Status: {doc.status || "available"}
-                      </div>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      {((doc.status || "").toLowerCase() === "rejected" ||
-                        (selectedApp &&
-                          ["returned", "rejected"].includes(
-                            (selectedApp.status || "").toLowerCase()
-                          ))) && (
-                        <>
-                          <button
-                            onClick={() => onReplaceClick(doc.id)}
-                            className="px-3 py-2 bg-white border rounded-md text-sm hover:bg-gray-50"
-                          >
-                            {replacingMap[doc.id] ? "Replacing..." : "Replace"}
-                          </button>
-                        </>
-                      )}
-                      {doc.id && (
-                        <button
-                          onClick={async () => {
-                            try {
-                              const blob = await downloadFile(doc.id);
-                              triggerFileDownload(
-                                blob,
-                                doc.fileName || `file_${doc.id}.pdf`
-                              );
-                            } catch (err) {
-                              console.error("Download failed:", err);
-                              toast.error(
-                                err.message || "Download not available"
-                              );
-                            }
-                          }}
-                          className="px-3 py-2 bg-white border rounded-md text-sm hover:bg-gray-50"
-                        >
-                          Download
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-4">
-              <h4 className="font-medium">Review History</h4>
-              <div
-                ref={historyRef}
-                className="mt-2 space-y-2 text-sm text-gray-700"
-              >
-                {(reviewHistoryMap[selectedApp.id] || []).length === 0 && (
-                  <div className="text-gray-500">
-                    No review history available.
-                  </div>
-                )}
-                {(reviewHistoryMap[selectedApp.id] || []).map((item) => (
-                  <div
-                    key={item.id}
-                    className="p-3 border rounded-md bg-gray-50"
-                  >
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="font-medium">
-                          {item.reviewerName || item.reviewer || "Reviewer"}
-                        </div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(
-                            item.createdAt || item.timestamp || item.date
-                          ).toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-xs text-right">
-                        <div className="font-semibold">
-                          {(item.status || "").replace(/_/g, " ")}
-                        </div>
-                      </div>
-                    </div>
-                    {item.comments && (
-                      <div className="mt-2 text-sm text-gray-700">
-                        {item.comments}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="mt-6 text-right">
-              <button
-                onClick={closeModal}
-                className="px-4 py-2 rounded-md border"
-              >
-                Close
-              </button>
-              <a
-                href="/client/pending-applications"
-                className="ml-3 px-4 py-2 rounded-md bg-[#A8C045] text-white"
-              >
-                Edit & Resubmit
-              </a>
-            </div>
+        <div className="border-t px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-sm text-gray-600">
+            Showing {attentionApps.length} returned/rejected app(s) on this
+            page.
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePreviousPage}
+              disabled={!hasPreviousPage}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <ArrowLeft className="w-4 h-4" /> Prev
+            </button>
+            <span className="text-sm text-gray-600">
+              Page {pageNumber} of {currentTotalPages}
+            </span>
+            <button
+              type="button"
+              onClick={handleNextPage}
+              disabled={!hasNextPage}
+              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border text-sm text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Next <ArrowRight className="w-4 h-4" />
+            </button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };

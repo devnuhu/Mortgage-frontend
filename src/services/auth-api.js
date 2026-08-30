@@ -48,6 +48,29 @@ export const loginUser = async ({ email, password }) => {
   } catch (error) {
     console.error("❌ Login error:", error);
 
+    const responseData = error.response?.data;
+    const accessResponse = responseData?.data || responseData;
+    const responseCode = accessResponse?.code || accessResponse?.Code;
+    const responseMessage =
+      accessResponse?.message || accessResponse?.Message || error.message || "";
+    const looksLikeAccessDisabledMessage =
+      /access\s+is\s+temporarily\s+unavailable/i.test(responseMessage);
+
+    // Keep this contract ahead of generic status handling so proxies that
+    // normalize the 403 status cannot turn the access notice into a card error.
+    if (
+      String(responseCode).trim().toUpperCase() === "LOGIN_ACCESS_DISABLED" ||
+      looksLikeAccessDisabledMessage
+    ) {
+      const accessError = new Error(
+        responseMessage || "Login access is temporarily unavailable.",
+      );
+      accessError.code = "LOGIN_ACCESS_DISABLED";
+      accessError.timestamp = accessResponse.timestamp;
+      accessError.response = error.response;
+      throw accessError;
+    }
+
     // Enhanced error handling
     if (error.response?.status === 400) {
       const serverMessage = error.response.data?.message;

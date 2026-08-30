@@ -186,7 +186,7 @@ const ManagerUsers = () => {
       setError(
         err.response?.data?.message ||
           err.message ||
-          "Failed to create user. Please try again."
+          "Failed to create user. Please try again.",
       );
     } finally {
       setFormLoading(false);
@@ -220,14 +220,14 @@ const ManagerUsers = () => {
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error("Delete request timed out")),
-          timeoutMs
-        )
+          timeoutMs,
+        ),
       );
 
       const result = await Promise.race([deletePromise, timeoutPromise]);
       console.log(
         `handleDeleteUser: deleteUser resolved for ${userId}`,
-        result
+        result,
       );
       toast.success(`User ${userName} deleted`);
 
@@ -382,10 +382,23 @@ const ManagerUsers = () => {
                       Super Admins
                     </p>
                     <p className="text-2xl font-bold text-purple-900">
-                      {userStats.byRole.SUPER_ADMIN}
+                      {userStats.byRole.SUPER_ADMIN || 0}
                     </p>
                   </div>
                   <Crown className="w-8 h-8 text-purple-600" />
+                </div>
+              </div>
+              <div className="bg-sky-50 rounded-lg p-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sky-600 text-sm font-medium">
+                      Lead Reviewers
+                    </p>
+                    <p className="text-2xl font-bold text-sky-900">
+                      {userStats.byRole.LEAD_REVIEWER || 0}
+                    </p>
+                  </div>
+                  <Users className="w-8 h-8 text-sky-600" />
                 </div>
               </div>
             </div>
@@ -413,7 +426,9 @@ const ManagerUsers = () => {
                   <option value="">All Roles</option>
                   <option value="SUPER_ADMIN">Super Admin</option>
                   <option value="ADMIN">Admin</option>
+                  <option value="LEAD_REVIEWER">Lead Reviewer</option>
                   <option value="CLIENT">Client</option>
+                  <option value="SERVICE_MANAGER">Service Manager</option>
                 </select>
               </div>
               <button
@@ -675,8 +690,12 @@ const ManagerUsers = () => {
                     >
                       <option value="">Select a role...</option>
                       <option value="CLIENT">👤 Client</option>
+                      <option value="LEAD_REVIEWER">🧑‍⚖️ Lead Reviewer</option>
                       <option value="ADMIN">🛡️ Admin</option>
                       <option value="SUPER_ADMIN">👑 Super Admin</option>
+                      <option value="SERVICE_MANAGER">
+                        📋 Service Manager
+                      </option>
                     </select>
                     {formErrors.role && (
                       <p className="text-red-600 text-sm mt-1">
@@ -685,8 +704,9 @@ const ManagerUsers = () => {
                     )}
                   </div>
 
-                  {/* PMI Company - Only show for CLIENT role */}
-                  {formData.role === "CLIENT" && (
+                  {/* PMI Company - show for CLIENT and SERVICE_MANAGER roles */}
+                  {(formData.role === "CLIENT" ||
+                    formData.role === "SERVICE_MANAGER") && (
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-1">
                         PMI Company *

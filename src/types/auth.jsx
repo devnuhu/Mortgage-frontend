@@ -2,7 +2,9 @@
 export const UserRole = {
   SUPER_ADMIN: "SUPER_ADMIN", // PFA Super Admin
   ADMIN: "ADMIN", // PFA Admin
+  LEAD_REVIEWER: "LEAD_REVIEWER", // Lead Reviewer
   CLIENT: "CLIENT", // PMI Company
+  SERVICE_MANAGER: "SERVICE_MANAGER", // Service Manager
 };
 
 // Default user structure (for reference and validation)
@@ -41,12 +43,24 @@ export const isValidRole = (role) => {
 
 // Helper function to check if user is admin
 export const isAdmin = (user) => {
-  return user && (user.role === UserRole.ADMIN || user.role === UserRole.SUPER_ADMIN);
+  return (
+    user && (user.role === UserRole.ADMIN || user.role === UserRole.SUPER_ADMIN)
+  );
+};
+
+// Helper function to check if user is lead reviewer
+export const isLeadReviewer = (user) => {
+  return user && user.role === UserRole.LEAD_REVIEWER;
 };
 
 // Helper function to check if user is client (PMI)
 export const isClient = (user) => {
   return user && user.role === UserRole.CLIENT;
+};
+
+// Helper to check if user is service manager
+export const isServiceManager = (user) => {
+  return user && user.role === UserRole.SERVICE_MANAGER;
 };
 
 // Helper to check if user is super admin

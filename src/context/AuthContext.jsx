@@ -208,7 +208,7 @@ export const AuthProvider = ({ children }) => {
   const changePassword = async (
     currentPassword,
     newPassword,
-    confirmPassword = newPassword
+    confirmPassword = newPassword,
   ) => {
     if (!user) {
       throw new Error("No user logged in");
@@ -278,9 +278,19 @@ export const AuthProvider = ({ children }) => {
     return user?.role === UserRole.ADMIN || user?.role === UserRole.SUPER_ADMIN;
   };
 
+  // Check if user is lead reviewer
+  const isLeadReviewer = () => {
+    return user?.role === UserRole.LEAD_REVIEWER;
+  };
+
   // Check if user is super admin
   const isSuperAdmin = () => {
     return user?.role === UserRole.SUPER_ADMIN;
+  };
+
+  // Check if user is service manager
+  const isServiceManager = () => {
+    return user?.role === UserRole.SERVICE_MANAGER;
   };
 
   // Check if user is client
@@ -304,7 +314,9 @@ export const AuthProvider = ({ children }) => {
     // Helpers
     hasRole,
     isAdmin,
+    isLeadReviewer,
     isSuperAdmin,
+    isServiceManager,
     isClient,
     shouldChangePassword: requiresPasswordChangeCheck,
 

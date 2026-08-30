@@ -20,8 +20,7 @@ const envReactApp =
     process.env &&
     process.env.REACT_APP_API_URL) ||
   null;
-const API_BASE_URL =
-  envVite || envReactApp || "https://accessmortgageapi.access-armpensions.com/api";
+const API_BASE_URL = envVite || envReactApp || "https://localhost:7118/api";
 const isDevelopment =
   (importMetaEnv?.MODE ||
     (typeof process !== "undefined" && process.env?.NODE_ENV) ||
@@ -45,7 +44,7 @@ const emitApiActivity = () => {
     window.dispatchEvent(
       new CustomEvent("api-activity", {
         detail: { count: _outstandingRequestCount },
-      })
+      }),
     );
   } catch (e) {
     // running in non-browser env or event dispatch failed
@@ -65,8 +64,11 @@ api.interceptors.request.use(
       console.log(
         `🚀 Making ${config.method?.toUpperCase()} request to: ${
           config.baseURL
-        }${config.url}`
+        }${config.url}`,
       );
+      if (config.params) {
+        console.log("📋 Query params:", config.params);
+      }
       if (config.data) {
         console.log("📤 Request data:", config.data);
       }
@@ -81,7 +83,7 @@ api.interceptors.request.use(
   (error) => {
     console.error("❌ Request interceptor error:", error);
     return Promise.reject(error);
-  }
+  },
 );
 
 // Response interceptor to handle common response patterns
@@ -90,11 +92,12 @@ api.interceptors.response.use(
     // decrement outstanding requests and notify UI
     _outstandingRequestCount = Math.max(0, _outstandingRequestCount - 1);
     emitApiActivity();
+
     // Log successful responses in development
     if (isDevelopment) {
       console.log(
         `✅ ${response.config.method?.toUpperCase()} ${response.config.url}:`,
-        response.status
+        response.status,
       );
       console.log("📥 Response data:", response.data);
     }
@@ -108,11 +111,11 @@ api.interceptors.response.use(
     // Enhanced error logging
     if (isDevelopment) {
       console.error(`❌ API Error:`, {
-        url: error.config?.url,
-        method: error.config?.method?.toUpperCase(),
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
+        url: error.config?.url || "Unknown URL",
+        method: error.config?.method?.toUpperCase?.() || "Unknown Method",
+        status: error.response?.status || "No Status",
+        statusText: error.response?.statusText || "No Status Text",
+        data: error.response?.data || "No Response Data",
         message: error.message,
       });
     }
@@ -157,7 +160,13 @@ api.interceptors.response.use(
 
     // Handle not found (404)
     if (error.response?.status === 404) {
-      error.message = "The requested resource was not found.";
+      const requestUrl = String(error.config?.url || "");
+      const isRsaRelatedRequest =
+        /rsa|rsapin|check-rsapin|GetBiodata|ValidateMpsPin/i.test(requestUrl);
+
+      error.message = isRsaRelatedRequest
+        ? "Invalid rsapin"
+        : "The requested resource was not found.";
     }
 
     // Handle network errors
@@ -188,7 +197,7 @@ api.interceptors.response.use(
     }
 
     return Promise.reject(error);
-  }
+  },
 );
 
 // Helper function to check if user is authenticated

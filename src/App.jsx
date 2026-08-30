@@ -21,9 +21,27 @@ import SubmitApplicationForm from "./components/client/SubmitApplicationForm";
 import PendingApplications from "./components/client/PendingApplications";
 import ManagePMI from "./components/admin/ManagePMI";
 import AdminApplicationManagement from "./components/admin/AdminApplicationManagement";
+import AdminQueue from "./components/admin/AdminQueue";
 import AdminUsers from "./components/admin/AdminUsers";
+import AdminEscalationRules from "./components/admin/AdminEscalationRules";
 import Reports from "./components/admin/Reports";
 import ReturnedDocs from "./components/client/ReturnedDocs";
+import LeadReviewerDashboard from "./components/lead-reviewer/LeadReviewerDashboard";
+import LeadReviewerQueue from "./components/lead-reviewer/LeadReviewerQueue";
+import LeadReviewerApplications from "./components/lead-reviewer/LeadReviewerApplications";
+import LeadReviewerReassignments from "./components/lead-reviewer/LeadReviewerReassignments";
+import LeadReviewerReassignmentHistory from "./components/lead-reviewer/LeadReviewerReassignmentHistory";
+import LeadReviewerReports from "./components/lead-reviewer/LeadReviewerReports";
+import LeadReviewerPerformance from "./components/lead-reviewer/LeadReviewerPerformance";
+import LeadReviewerAdvancedActions from "./components/lead-reviewer/LeadReviewerAdvancedActions";
+import LeadReviewerEscalations from "./components/lead-reviewer/LeadReviewerEscalations";
+import LeadReviewerWorkload from "./components/lead-reviewer/LeadReviewerWorkload";
+import LeadReviewerReviewerManagement from "./components/lead-reviewer/LeadReviewerReviewerManagement";
+import ServiceManagerDashboard from "./components/service-manager/ServiceManagerDashboard";
+import ServiceManagerApplications from "./components/service-manager/ServiceManagerApplications";
+import ServiceManagerAllApplications from "./components/service-manager/ServiceManagerAllApplications";
+import ServiceManagerCreateApplication from "./components/service-manager/ServiceManagerCreateApplication";
+import ServiceManagerDraftApplications from "./components/service-manager/ServiceManagerDraftApplications";
 
 // Import services for AdminDashboard
 import { usePMI } from "./context/PMIContext";
@@ -34,14 +52,14 @@ const DashboardLayout = ({ children }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
 
   return (
-    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
+    <div className="min-h-screen bg-gray-50 flex flex-col overflow-x-hidden">
       {/* Header - Fixed at top */}
       <div className="flex-shrink-0">
-        <Header />
+        <Header onMenuToggle={() => setIsMobileMenuOpen((prev) => !prev)} />
       </div>
 
       {/* Main Layout Container - Flex row for sidebar + content */}
-      <div className="flex flex-1 min-h-0">
+      <div className="flex flex-1 min-h-0 pt-[104px] sm:pt-[118px]">
         {/* Sidebar - Fixed */}
         <div className="flex-shrink-0">
           <Sidebar
@@ -51,8 +69,10 @@ const DashboardLayout = ({ children }) => {
         </div>
 
         {/* Main Content Area - Only this scrolls */}
-        <main className="flex-1 overflow-y-auto bg-gray-50">
-          <div className="p-4 pb-8 min-h-full">{children}</div>
+        <main className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden bg-gray-50 min-h-0 lg:pl-[18rem]">
+          <div className="w-full max-w-[1600px] mx-auto px-3 py-4 pb-8 min-h-full sm:px-4 lg:px-6 xl:px-8">
+            {children}
+          </div>
         </main>
       </div>
     </div>
@@ -94,25 +114,32 @@ const AdminDashboard = () => {
         setLoading(true);
         setError(null);
 
-        const applications = await getAllApplications();
+        const response = await getAllApplications(1, 100); // Maximum page size for stats
+        const applications = Array.isArray(response?.data)
+          ? response.data
+          : Array.isArray(response)
+            ? response
+            : Array.isArray(response?.data?.data)
+              ? response.data.data
+              : [];
 
         // Calculate application statistics
         const stats = {
           total: applications.length,
           pending: applications.filter(
-            (app) => app.status?.toLowerCase() === "pending"
+            (app) => app.status?.toLowerCase() === "pending",
           ).length,
           submitted: applications.filter(
-            (app) => app.status?.toLowerCase() === "submitted"
+            (app) => app.status?.toLowerCase() === "submitted",
           ).length,
           approved: applications.filter(
-            (app) => app.status?.toLowerCase() === "approved"
+            (app) => app.status?.toLowerCase() === "approved",
           ).length,
           rejected: applications.filter(
-            (app) => app.status?.toLowerCase() === "rejected"
+            (app) => app.status?.toLowerCase() === "rejected",
           ).length,
           underReview: applications.filter(
-            (app) => app.status?.toLowerCase() === "under_review"
+            (app) => app.status?.toLowerCase() === "under_review",
           ).length,
           approvedToday: 0, // Will calculate below
         };
@@ -647,6 +674,10 @@ const HomeRoute = () => {
 
   if (user?.role === UserRole.ADMIN || user?.role === UserRole.SUPER_ADMIN) {
     return <Navigate to="/admin" replace />;
+  } else if (user?.role === UserRole.LEAD_REVIEWER) {
+    return <Navigate to="/lead-reviewer" replace />;
+  } else if (user?.role === UserRole.SERVICE_MANAGER) {
+    return <Navigate to="/service-manager" replace />;
   } else {
     return <Navigate to="/client" replace />;
   }
@@ -752,6 +783,36 @@ const AppRoutes = () => {
         }
       />
 
+      {/* Escalation Rule Management */}
+      <Route
+        path="/admin/escalation-rules"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SUPER_ADMIN]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <AdminEscalationRules />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Admin My Queue - Document Review */}
+      <Route
+        path="/admin/my-queue"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.ADMIN, UserRole.SUPER_ADMIN]}>
+            <PMIProvider>
+              <DashboardLayout>
+                <PasswordChangeGuard>
+                  <AdminQueue />
+                </PasswordChangeGuard>
+              </DashboardLayout>
+            </PMIProvider>
+          </ProtectedRoute>
+        }
+      />
+
       {/* Admin Reports */}
       <Route
         path="/admin/reports"
@@ -760,6 +821,220 @@ const AppRoutes = () => {
             <DashboardLayout>
               <PasswordChangeGuard>
                 <Reports />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Lead Reviewer Dashboard */}
+      <Route
+        path="/lead-reviewer"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerDashboard />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/queue"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerQueue />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/reports"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerReports />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/applications"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <PMIProvider>
+              <DashboardLayout>
+                <PasswordChangeGuard>
+                  <LeadReviewerApplications />
+                </PasswordChangeGuard>
+              </DashboardLayout>
+            </PMIProvider>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/reassignments"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerReassignments />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/reassignment-history"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerReassignmentHistory />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/performance"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerPerformance />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/advanced-actions"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerAdvancedActions />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/escalations"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerEscalations />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/workload"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerWorkload />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/lead-reviewer/reviewer-management"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.LEAD_REVIEWER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <LeadReviewerReviewerManagement />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Service Manager Dashboard */}
+      <Route
+        path="/service-manager"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SERVICE_MANAGER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <ServiceManagerDashboard />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/service-manager/applications"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SERVICE_MANAGER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <ServiceManagerApplications />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/service-manager/all-applications"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SERVICE_MANAGER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <ServiceManagerAllApplications />
+              </PasswordChangeGuard>
+            </DashboardLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/service-manager/create-application"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SERVICE_MANAGER]}>
+            <ApplicationProvider>
+              <DashboardLayout>
+                <PasswordChangeGuard>
+                  <ServiceManagerCreateApplication />
+                </PasswordChangeGuard>
+              </DashboardLayout>
+            </ApplicationProvider>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/service-manager/my-drafts"
+        element={
+          <ProtectedRoute allowedRoles={[UserRole.SERVICE_MANAGER]}>
+            <DashboardLayout>
+              <PasswordChangeGuard>
+                <ServiceManagerDraftApplications />
               </PasswordChangeGuard>
             </DashboardLayout>
           </ProtectedRoute>

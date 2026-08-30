@@ -1,5 +1,9 @@
 // src/services/api.js
-import api from "./axios-config";
+import api from "./axios-config.js";
+import {
+  getDocumentMaxFileSizeBytes,
+  getDocumentMaxFileSizeLabel,
+} from "./documentSize.js";
 
 /**
  * Application API Service Functions
@@ -15,9 +19,15 @@ import api from "./axios-config";
  * GET /api/applications
  * @returns {Promise<Array>} List of all applications
  */
-export const getAllApplications = async () => {
+export const getAllApplications = async (pageNumber = null, pageSize = 50) => {
   try {
-    const response = await api.get("/applications");
+    const params = {};
+    if (pageNumber != null) {
+      params.pageNumber = pageNumber;
+      params.pageSize = pageSize;
+    }
+
+    const response = await api.get("/applications", { params });
     return response.data;
   } catch (error) {
     console.error("Error fetching all applications:", error);
@@ -26,13 +36,17 @@ export const getAllApplications = async () => {
 };
 
 /**
- * Get current user's applications (Client only)
- * GET /api/applications/my-applications
- * @returns {Promise<Array>} List of user's applications
+ * Get current user's applications (Client only) - Paginated
+ * GET /api/applications/my-applications/paged
+ * @param {number} pageNumber - Page number (default: 1)
+ * @param {number} pageSize - Page size (default: 50)
+ * @returns {Promise<{data: Array, totalCount: number, pageNumber: number, pageSize: number, totalPages: number, hasNextPage: boolean, hasPreviousPage: boolean}>}
  */
-export const getMyApplications = async () => {
+export const getMyApplications = async (pageNumber = 1, pageSize = 50) => {
   try {
-    const response = await api.get("/applications/my-applications");
+    const response = await api.get("/applications/my-applications/paged", {
+      params: { pageNumber, pageSize },
+    });
     return response.data;
   } catch (error) {
     console.error("Error fetching my applications:", error);
@@ -86,7 +100,7 @@ export const createApplication = async (applicationData) => {
       "propertyValue",
     ];
     const missingFields = requiredFields.filter(
-      (field) => !applicationData[field] && applicationData[field] !== 0
+      (field) => !applicationData[field] && applicationData[field] !== 0,
     );
 
     if (missingFields.length > 0) {
@@ -115,7 +129,7 @@ export const createApplication = async (applicationData) => {
 
 /**
  * Submit an application (Client only)
- * POST /api/applications/{id}/submit
+ * PUT /api/applications/{id}/submit
  * @param {string} id - Application ID (GUID)
  * @returns {Promise<Object>} Success message
  */
@@ -124,7 +138,7 @@ export const submitApplicationById = async (id) => {
     if (!id) {
       throw new Error("Application ID is required");
     }
-    const response = await api.post(`/applications/${id}/submit`);
+    const response = await api.put(`/applications/${id}/submit`);
     return response.data;
   } catch (error) {
     console.error(`Error submitting application ${id}:`, error);
@@ -224,6 +238,7 @@ export const getCurrentUser = () => {
 export const APPLICATION_STATUS = {
   DRAFT: "draft",
   SUBMITTED: "submitted",
+  PENDING: "pending",
   UNDER_REVIEW: "under_review",
   APPROVED: "approved",
   REJECTED: "rejected",
@@ -240,6 +255,7 @@ export const getStatusText = (status) => {
   const statusMap = {
     [APPLICATION_STATUS.DRAFT]: "Draft",
     [APPLICATION_STATUS.SUBMITTED]: "Submitted",
+    [APPLICATION_STATUS.PENDING]: "Pending",
     [APPLICATION_STATUS.UNDER_REVIEW]: "Under Review",
     [APPLICATION_STATUS.APPROVED]: "Approved",
     [APPLICATION_STATUS.REJECTED]: "Rejected",
@@ -259,6 +275,7 @@ export const getStatusColor = (status) => {
   const colorMap = {
     [APPLICATION_STATUS.DRAFT]: "#6B7280", // Gray
     [APPLICATION_STATUS.SUBMITTED]: "#3B82F6", // Blue
+    [APPLICATION_STATUS.PENDING]: "#F59E0B", // Amber
     [APPLICATION_STATUS.UNDER_REVIEW]: "#F59E0B", // Amber
     [APPLICATION_STATUS.APPROVED]: "#10B981", // Green
     [APPLICATION_STATUS.REJECTED]: "#EF4444", // Red
@@ -275,7 +292,7 @@ export const getStatusColor = (status) => {
 
 /**
  * Upload PDF file for application
- * POST /api/File/upload
+ * POST /api/files/upload
  * @param {string} applicationId - Application ID
  * @param {string} documentType - Type of document
  * @param {File} file - File to upload
@@ -284,7 +301,7 @@ export const getStatusColor = (status) => {
 export const uploadPdfForApplication = async (
   applicationId,
   documentType,
-  file
+  file,
 ) => {
   try {
     // Validate input
@@ -296,6 +313,13 @@ export const uploadPdfForApplication = async (
       throw new Error("Only PDF files are allowed");
     }
 
+    const maxFileSizeBytes = getDocumentMaxFileSizeBytes(documentType);
+    if (file.size > maxFileSizeBytes) {
+      throw new Error(
+        `File size exceeds maximum limit of ${getDocumentMaxFileSizeLabel(documentType)} for this document type`,
+      );
+    }
+
     // Create FormData for file upload
     const formData = new FormData();
     formData.append("File", file);
@@ -303,11 +327,27 @@ export const uploadPdfForApplication = async (
     formData.append("DocumentType", documentType);
 
     // Make API call with multipart/form-data
-    const response = await api.post("/file/upload", formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    });
+    let response;
+    try {
+      response = await api.post("/files/upload", formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.warn(
+          "⚠️ /files/upload not found, retrying legacy /file/upload route",
+        );
+        response = await api.post("/file/upload", formData, {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
 
     console.log("📄 File uploaded successfully:", {
       fileName: file.name,
@@ -320,19 +360,36 @@ export const uploadPdfForApplication = async (
   } catch (error) {
     console.error("❌ File upload error:", error);
 
-    // Enhanced error handling
+    const responseData = error.response?.data;
+
     if (error.response?.status === 400) {
-      const serverMessage = error.response.data?.message;
-      if (serverMessage?.toLowerCase().includes("file type")) {
-        throw new Error("Invalid file type. Only PDF files are allowed");
-      } else if (serverMessage?.toLowerCase().includes("size")) {
-        throw new Error("File size exceeds maximum limit");
+      const serverMessage =
+        responseData?.message ||
+        responseData?.error ||
+        responseData?.title ||
+        (typeof responseData === "string" ? responseData : "");
+
+      if (serverMessage) {
+        throw new Error(serverMessage);
       }
+
+      if (responseData?.errors) {
+        const flattenedErrors = Object.values(responseData.errors)
+          .flat()
+          .filter(Boolean)
+          .join(" ");
+
+        if (flattenedErrors) {
+          throw new Error(flattenedErrors);
+        }
+      }
+
+      throw new Error("File upload failed due to invalid input");
     } else if (error.response?.status === 401) {
       throw new Error("You must be logged in to upload files");
     } else if (error.response?.status === 403) {
       throw new Error(
-        "You don't have permission to upload files or the application is not editable"
+        "You don't have permission to upload files or the application is not editable",
       );
     } else if (!error.response) {
       throw new Error("Network error. Please check your connection");
@@ -371,7 +428,7 @@ export const listFiles = async (applicationId) => {
       throw new Error("You must be logged in to view files");
     } else if (error.response?.status === 403) {
       throw new Error(
-        "You don't have permission to view files for this application"
+        "You don't have permission to view files for this application",
       );
     } else if (!error.response) {
       throw new Error("Network error. Please check your connection");
@@ -382,8 +439,32 @@ export const listFiles = async (applicationId) => {
 };
 
 /**
+ * Get all document types
+ * GET /api/documenttypes
+ * @returns {Promise<Array>} List of supported document types
+ */
+export const getDocumentTypes = async () => {
+  try {
+    const response = await api.get("/documenttypes");
+    return response.data || [];
+  } catch (error) {
+    console.error("❌ Get document types error:", error);
+
+    if (error.response?.status === 401) {
+      throw new Error("You must be logged in to fetch document types");
+    } else if (error.response?.status === 403) {
+      throw new Error("You don't have permission to fetch document types");
+    } else if (!error.response) {
+      throw new Error("Network error. Please check your connection");
+    }
+
+    throw error;
+  }
+};
+
+/**
  * Delete file by ID
- * DELETE /api/File/{fileId}
+ * DELETE /api/files/{fileId}
  * @param {string} fileId - File ID to delete
  * @returns {Promise<Object>} Delete response
  */
@@ -393,7 +474,19 @@ export const deleteFileById = async (fileId) => {
       throw new Error("File ID is required");
     }
 
-    const response = await api.delete(`/file/${fileId}`);
+    let response;
+    try {
+      response = await api.delete(`/files/${fileId}`);
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.warn(
+          "⚠️ /files/{fileId} not found, retrying legacy /file/{fileId} route",
+        );
+        response = await api.delete(`/file/${fileId}`);
+      } else {
+        throw error;
+      }
+    }
 
     console.log("🗑️ File deleted successfully:", { fileId });
 
@@ -477,12 +570,16 @@ export const downloadFile = async (fileId, fileName = null) => {
 
 /**
  * Replace an existing file by ID
- * POST /api/File/replace
+ * PUT /api/files/{fileId}/replace
  * @param {string} existingFileId - Existing file ID to replace
  * @param {File} file - New file to upload
  * @returns {Promise<Object>} Replace response
  */
-export const replaceFileById = async (existingFileId, file) => {
+export const replaceFileById = async (
+  existingFileId,
+  file,
+  documentType = "",
+) => {
   try {
     if (!existingFileId || !file) {
       throw new Error("File ID and replacement file are required");
@@ -492,15 +589,38 @@ export const replaceFileById = async (existingFileId, file) => {
       throw new Error("Only PDF files are allowed");
     }
 
-    const formData = new FormData();
-    formData.append("ExistingFileId", existingFileId);
-    formData.append("File", file);
+    const maxFileSizeBytes = getDocumentMaxFileSizeBytes(documentType);
+    if (file.size > maxFileSizeBytes) {
+      throw new Error(
+        `File size exceeds maximum limit of ${getDocumentMaxFileSizeLabel(documentType)} for this document type`,
+      );
+    }
 
-    const response = await api.post("/file/replace", formData, {
-      headers: {
-        "Content-Type": "multipart/form-data",
-      },
-    });
+    const formData = new FormData();
+    formData.append("File", file);
+    formData.append("ExistingFileId", existingFileId);
+
+    let response;
+    try {
+      response = await api.put(`/files/${existingFileId}/replace`, formData, {
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+    } catch (error) {
+      if (error.response?.status === 404) {
+        console.warn(
+          "⚠️ /files/{fileId}/replace not found, retrying legacy /file/replace route",
+        );
+        response = await api.post("/file/replace", formData, {
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        });
+      } else {
+        throw error;
+      }
+    }
 
     console.log("🔁 File replaced successfully:", {
       existingFileId,
@@ -511,18 +631,36 @@ export const replaceFileById = async (existingFileId, file) => {
   } catch (error) {
     console.error("❌ Replace file error:", error);
 
+    const responseData = error.response?.data;
+
     if (error.response?.status === 400) {
-      const serverMessage = error.response.data?.message;
-      if (serverMessage?.toLowerCase().includes("file type")) {
-        throw new Error("Invalid file type. Only PDF files are allowed");
-      } else if (serverMessage?.toLowerCase().includes("size")) {
-        throw new Error("File size exceeds maximum limit");
+      const serverMessage =
+        responseData?.message ||
+        responseData?.error ||
+        responseData?.title ||
+        (typeof responseData === "string" ? responseData : "");
+
+      if (serverMessage) {
+        throw new Error(serverMessage);
       }
+
+      if (responseData?.errors) {
+        const flattenedErrors = Object.values(responseData.errors)
+          .flat()
+          .filter(Boolean)
+          .join(" ");
+
+        if (flattenedErrors) {
+          throw new Error(flattenedErrors);
+        }
+      }
+
+      throw new Error("File replacement failed due to invalid input");
     } else if (error.response?.status === 401) {
       throw new Error("You must be logged in to replace files");
     } else if (error.response?.status === 403) {
       throw new Error(
-        "You don't have permission to replace this file or the application is not in a replacable state"
+        "You don't have permission to replace this file or the application is not in a replacable state",
       );
     } else if (!error.response) {
       throw new Error("Network error. Please check your connection");

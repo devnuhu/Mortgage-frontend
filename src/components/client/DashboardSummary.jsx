@@ -28,24 +28,34 @@ const DashboardSummary = ({ onCardClick }) => {
     setError(null);
 
     try {
-      let fetchedApplications = [];
+      let response;
 
       if (isAdmin()) {
         // Admins can see all applications
-        fetchedApplications = await getAllApplications();
+        response = await getAllApplications(1, 100); // Maximum page size for dashboard stats
       } else if (isClient() && user?.id) {
         // Clients can only see their own applications
-        fetchedApplications = await getApplicationsByUser(user.id);
+        response = await getApplicationsByUser(user.id, 1, 100); // Maximum page size for dashboard stats
       } else if (user?.pmiCompanyId) {
         // PMI users can see applications from their company
-        fetchedApplications = await getApplicationsByPMI(user.pmiCompanyId);
+        // Use general endpoint with large page size and filter by PMI company
+        response = await getAllApplications(1, 100); // Maximum page size for dashboard stats
+        // Filter by PMI company on frontend
+        if (response.data) {
+          response.data = response.data.filter(
+            (app) => app.pmiCompanyId === user.pmiCompanyId,
+          );
+        }
       }
+
+      // Extract data array from paginated response
+      const fetchedApplications = response.data || response;
 
       // Sort applications by most recent first
       const sortedApplications = sortApplications(
         fetchedApplications,
         "updatedAt",
-        "desc"
+        "desc",
       );
 
       setApplications(sortedApplications);
@@ -61,14 +71,9 @@ const DashboardSummary = ({ onCardClick }) => {
     }
   };
 
-  // Initial load and refresh every 5 minutes
+  // Initial load
   useEffect(() => {
     fetchApplications();
-
-    // Set up auto-refresh every 5 minutes
-    const refreshInterval = setInterval(fetchApplications, 5 * 60 * 1000);
-
-    return () => clearInterval(refreshInterval);
   }, [user, isAdmin, isClient]);
 
   // Manual refresh function

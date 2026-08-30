@@ -42,6 +42,8 @@ import {
   formatCurrency,
   formatDate,
   getApplicationById,
+  searchApplications,
+  getReportSummary,
 } from "../../services/applicationService"; // Adjust path as needed
 import { getApplicationReviewHistory } from "../../services/application-api";
 
@@ -64,6 +66,11 @@ const AdminApplicationManagement = () => {
 
   // Enhanced search and filter states
   const [searchDebounce, setSearchDebounce] = useState("");
+  const [apiSearchTerm, setApiSearchTerm] = useState("");
+  const [debouncedApiSearchTerm, setDebouncedApiSearchTerm] = useState("");
+  const [apiSearchResults, setApiSearchResults] = useState([]);
+  const [apiSearchLoading, setApiSearchLoading] = useState(false);
+  const [apiSearchError, setApiSearchError] = useState(null);
   const [dateRange, setDateRange] = useState({ start: "", end: "" });
   const [loanAmountRange, setLoanAmountRange] = useState({ min: "", max: "" });
   const [propertyValueRange, setPropertyValueRange] = useState({
@@ -80,9 +87,15 @@ const AdminApplicationManagement = () => {
   const [reviewHistoryMap, setReviewHistoryMap] = useState({});
   const [reviewHistoryLoading, setReviewHistoryLoading] = useState({});
 
-  // Auto-refresh state
-  const [autoRefresh, setAutoRefresh] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(new Date());
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageSize] = useState(20);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [hasPreviousPage, setHasPreviousPage] = useState(false);
+  const [reportSummary, setReportSummary] = useState(null);
+  const [reportSummaryLoading, setReportSummaryLoading] = useState(false);
 
   // Confirmation modal state
   const [showConfirmModal, setShowConfirmModal] = useState(false);
@@ -145,6 +158,14 @@ const AdminApplicationManagement = () => {
   // Normalize status keys to avoid case/whitespace mismatches
   const normalizeStatus = (s) => (s || "").toLowerCase().trim();
 
+  const extractApplicationsFromPayload = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (!payload) return [];
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.items)) return payload.items;
+    return [];
+  };
+
   // Map backend data to frontend format
   const mapApplicationData = (backendApp) => {
     return {
@@ -185,30 +206,53 @@ const AdminApplicationManagement = () => {
   };
 
   // Load applications from API
-  const loadApplications = useCallback(async (showToast = false) => {
-    try {
-      setIsRefreshing(showToast);
-      if (!showToast) setLoading(true);
-      setError(null);
+  const loadApplications = useCallback(
+    async (page = pageNumber, showToast = false) => {
+      try {
+        setIsRefreshing(showToast);
+        if (!showToast) setLoading(true);
+        setError(null);
 
-      const response = await getAllApplications();
-      const mappedApplications = response.map(mapApplicationData);
+        const response = await getAllApplications(page, pageSize);
+        const pagePayload = response?.data || response;
+        const currentPageApplications = Array.isArray(pagePayload)
+          ? pagePayload
+          : pagePayload.data || [];
 
-      setApplications(mappedApplications);
-      setLastRefresh(new Date());
+        const mappedApplications =
+          currentPageApplications.map(mapApplicationData);
 
-      if (showToast) {
-        toast.success("Applications refreshed successfully");
+        const calculatedTotalCount =
+          pagePayload.totalCount ?? mappedApplications.length;
+        const calculatedTotalPages =
+          pagePayload.totalPages ??
+          Math.max(1, Math.ceil(calculatedTotalCount / pageSize));
+        const calculatedHasPreviousPage =
+          pagePayload.hasPreviousPage ?? page > 1;
+        const calculatedHasNextPage =
+          pagePayload.hasNextPage ?? page < calculatedTotalPages;
+
+        setApplications(mappedApplications);
+        setTotalCount(calculatedTotalCount);
+        setTotalPages(calculatedTotalPages);
+        setHasNextPage(calculatedHasNextPage);
+        setHasPreviousPage(calculatedHasPreviousPage);
+        setLastRefresh(new Date());
+
+        if (showToast) {
+          toast.success("Applications refreshed successfully");
+        }
+      } catch (err) {
+        console.error("Failed to load applications:", err);
+        setError(err.message || "Failed to load applications");
+        toast.error("Failed to load applications");
+      } finally {
+        setLoading(false);
+        setIsRefreshing(false);
       }
-    } catch (err) {
-      console.error("Failed to load applications:", err);
-      setError(err.message || "Failed to load applications");
-      toast.error("Failed to load applications");
-    } finally {
-      setLoading(false);
-      setIsRefreshing(false);
-    }
-  }, []);
+    },
+    [pageNumber, pageSize],
+  );
 
   // Load application documents
   const loadApplicationDocuments = useCallback(async (applicationId) => {
@@ -260,26 +304,15 @@ const AdminApplicationManagement = () => {
         }));
       }
     },
-    [reviewHistoryMap]
+    [reviewHistoryMap],
   );
 
-  // Initial load
+  // Initial load and page changes
   useEffect(() => {
-    loadApplications();
-  }, [loadApplications]);
+    loadApplications(pageNumber);
+  }, [loadApplications, pageNumber]);
 
-  // Auto-refresh setup
-  useEffect(() => {
-    if (!autoRefresh) return;
-
-    const interval = setInterval(() => {
-      loadApplications(false); // Silent refresh
-    }, 30000); // 30 seconds
-
-    return () => clearInterval(interval);
-  }, [autoRefresh, loadApplications]);
-
-  // Debounced search implementation
+  // Debounced search implementation for local paginated filter
   useEffect(() => {
     const timer = setTimeout(() => {
       setSearchDebounce(searchTerm);
@@ -288,16 +321,67 @@ const AdminApplicationManagement = () => {
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
+  // Debounced server-side search execution
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedApiSearchTerm(apiSearchTerm);
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [apiSearchTerm]);
+
+  useEffect(() => {
+    if (!debouncedApiSearchTerm.trim()) {
+      setApiSearchResults([]);
+      setApiSearchError(null);
+      setApiSearchLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    const runSearch = async () => {
+      try {
+        setApiSearchLoading(true);
+        setApiSearchError(null);
+
+        const response = await searchApplications(debouncedApiSearchTerm);
+        const payload = response?.data ?? response;
+        const searchItems = extractApplicationsFromPayload(payload);
+        const results = searchItems.map(mapApplicationData);
+
+        if (!cancelled) {
+          setApiSearchResults(results);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setApiSearchError(err.message || "Search failed");
+          setApiSearchResults([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setApiSearchLoading(false);
+        }
+      }
+    };
+
+    runSearch();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedApiSearchTerm]);
+
   // Get unique PMI companies for filter
   const pmiCompanies = useMemo(
     () => [...new Set(applications.map((app) => app.pmiCompany))],
-    [applications]
+    [applications],
   );
 
   // Calculate active filters count
   useEffect(() => {
     let count = 0;
     if (searchDebounce.trim()) count++;
+    if (apiSearchTerm.trim()) count++;
     if (statusFilter.length > 0) count++;
     if (pmiFilter.length > 0) count++;
     if (dateRange.start || dateRange.end) count++;
@@ -306,6 +390,7 @@ const AdminApplicationManagement = () => {
     setActiveFiltersCount(count);
   }, [
     searchDebounce,
+    apiSearchTerm,
     statusFilter,
     pmiFilter,
     dateRange,
@@ -421,10 +506,51 @@ const AdminApplicationManagement = () => {
     propertyValueRange,
   ]);
 
-  // Clear all filters
+  const displayedApplications = apiSearchTerm.trim()
+    ? apiSearchResults
+    : filteredApplications;
+
+  const summarySearchTerm = apiSearchTerm.trim()
+    ? apiSearchTerm.trim()
+    : searchDebounce.trim();
+
+  const loadReportSummary = useCallback(async () => {
+    try {
+      setReportSummaryLoading(true);
+
+      const summaryFilters = {
+        dateFrom: dateRange.start || undefined,
+        dateTo: dateRange.end || undefined,
+        dateField: dateRange.start || dateRange.end ? "SubmittedAt" : undefined,
+        statuses: statusFilter.length > 0 ? statusFilter : undefined,
+        priorities: undefined,
+        pmiCompanyId: undefined,
+        userId: undefined,
+        searchTerm: summarySearchTerm || undefined,
+      };
+
+      const summaryData = await getReportSummary(summaryFilters);
+      setReportSummary(summaryData);
+    } catch (err) {
+      console.error("Error loading application report summary:", err);
+      setReportSummary(null);
+    } finally {
+      setReportSummaryLoading(false);
+    }
+  }, [dateRange, statusFilter, summarySearchTerm]);
+
+  useEffect(() => {
+    loadReportSummary();
+  }, [loadReportSummary]);
+
   const clearAllFilters = useCallback(() => {
     setSearchTerm("");
     setSearchDebounce("");
+    setApiSearchTerm("");
+    setDebouncedApiSearchTerm("");
+    setApiSearchResults([]);
+    setApiSearchError(null);
+    setApiSearchLoading(false);
     setStatusFilter([]);
     setPmiFilter([]);
     setDateRange({ start: "", end: "" });
@@ -432,6 +558,14 @@ const AdminApplicationManagement = () => {
     setPropertyValueRange({ min: "", max: "" });
     setSortBy("newest");
     toast.success("All filters cleared");
+  }, []);
+
+  const clearServerSearch = useCallback(() => {
+    setApiSearchTerm("");
+    setDebouncedApiSearchTerm("");
+    setApiSearchResults([]);
+    setApiSearchError(null);
+    setApiSearchLoading(false);
   }, []);
 
   // Refresh data with loading state
@@ -480,7 +614,7 @@ const AdminApplicationManagement = () => {
 
       const updatedApp = await updateApplicationStatus(
         selectedApplication.applicationId,
-        statusUpdate
+        statusUpdate,
       );
 
       // Update local state with optimistic update
@@ -490,8 +624,8 @@ const AdminApplicationManagement = () => {
         prev.map((app) =>
           app.applicationId === selectedApplication.applicationId
             ? mappedUpdatedApp
-            : app
-        )
+            : app,
+        ),
       );
 
       // Update selected application if details modal is open
@@ -519,14 +653,14 @@ const AdminApplicationManagement = () => {
     setStatusFilter((prev) =>
       prev.includes(status)
         ? prev.filter((s) => s !== status)
-        : [...prev, status]
+        : [...prev, status],
     );
   };
 
   // Handle multiple PMI selection
   const handlePMIFilterChange = (pmi) => {
     setPmiFilter((prev) =>
-      prev.includes(pmi) ? prev.filter((p) => p !== pmi) : [...prev, pmi]
+      prev.includes(pmi) ? prev.filter((p) => p !== pmi) : [...prev, pmi],
     );
   };
 
@@ -568,28 +702,24 @@ const AdminApplicationManagement = () => {
         approved: 0,
         rejected: 0,
         submitted: 0,
-        draft: 0,
       };
     }
 
     const total = filteredApplications.length;
     const pending = filteredApplications.filter(
-      (app) => app.status === "pending"
+      (app) => app.status === "pending",
     ).length;
     const underReview = filteredApplications.filter(
-      (app) => app.status === "under_review"
+      (app) => app.status === "under_review",
     ).length;
     const approved = filteredApplications.filter(
-      (app) => app.status === "approved"
+      (app) => app.status === "approved",
     ).length;
     const rejected = filteredApplications.filter(
-      (app) => app.status === "rejected"
+      (app) => app.status === "rejected",
     ).length;
     const submitted = filteredApplications.filter(
-      (app) => app.status === "submitted"
-    ).length;
-    const draft = filteredApplications.filter(
-      (app) => app.status === "draft"
+      (app) => app.status === "submitted",
     ).length;
 
     return {
@@ -599,9 +729,28 @@ const AdminApplicationManagement = () => {
       approved,
       rejected,
       submitted,
-      draft,
     };
   }, [filteredApplications, loading]);
+
+  const adminSummaryStats = useMemo(() => {
+    const report = reportSummary;
+    const fallback = summaryStats;
+
+    return {
+      total:
+        report?.totalRecords ??
+        report?.totalCount ??
+        report?.total ??
+        fallback.total,
+      submitted:
+        report?.submittedCount ?? report?.submitted ?? fallback.submitted,
+      pending: report?.pendingCount ?? report?.pending ?? fallback.pending,
+      underReview:
+        report?.underReviewCount ?? report?.underReview ?? fallback.underReview,
+      approved: report?.approvedCount ?? report?.approved ?? fallback.approved,
+      rejected: report?.rejectedCount ?? report?.rejected ?? fallback.rejected,
+    };
+  }, [reportSummary, summaryStats]);
 
   // Loading state
   if (loading) {
@@ -637,7 +786,7 @@ const AdminApplicationManagement = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="w-full mx-auto px-3 sm:px-4 lg:px-6 py-8 space-y-6">
       {/* Toast Container */}
       <Toaster
         position="top-right"
@@ -650,7 +799,7 @@ const AdminApplicationManagement = () => {
           },
           success: {
             style: {
-              border: "1px solid #A8C045",
+              border: "1px solid #8DC63F",
             },
           },
           error: {
@@ -662,41 +811,26 @@ const AdminApplicationManagement = () => {
       />
 
       {/* Enhanced Header with Statistics */}
-      <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6">
-        <div className="flex items-center justify-between mb-6">
+      <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-6">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">
+            <h1 className="text-3xl font-semibold text-slate-900">
               Application Management
             </h1>
-            <p className="text-gray-600 mt-1">
-              Review and manage mortgage applications from all PMI companies
+            <p className="text-slate-600 mt-1 max-w-2xl">
+              Review and manage mortgage applications with enterprise-grade
+              filters and reporting.
             </p>
-            <div className="flex items-center mt-2 text-sm text-gray-500">
-              <Clock className="w-4 h-4 mr-1" />
-              Last updated: {lastRefresh.toLocaleTimeString()}
-              {autoRefresh && (
-                <span className="ml-2 text-green-600">
-                  • Auto-refresh enabled
-                </span>
-              )}
+            <div className="flex items-center mt-3 text-sm text-slate-500 gap-2">
+              <Clock className="w-4 h-4" />
+              <span>Last updated: {lastRefresh.toLocaleTimeString()}</span>
             </div>
           </div>
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-2">
-              <label className="flex items-center text-sm text-gray-600">
-                <input
-                  type="checkbox"
-                  checked={autoRefresh}
-                  onChange={(e) => setAutoRefresh(e.target.checked)}
-                  className="mr-2 rounded border-gray-300 text-[#A8C045] focus:ring-[#A8C045]"
-                />
-                Auto-refresh
-              </label>
-            </div>
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
             <button
               onClick={refreshData}
               disabled={isRefreshing}
-              className="flex items-center px-4 py-2 text-gray-600 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors disabled:opacity-50"
+              className="flex items-center px-4 py-2 text-slate-700 bg-slate-100 rounded-sm hover:bg-slate-200 transition-colors disabled:opacity-50"
             >
               <RefreshCw
                 className={`w-4 h-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`}
@@ -704,8 +838,8 @@ const AdminApplicationManagement = () => {
               {isRefreshing ? "Refreshing..." : "Refresh"}
             </button>
             <div className="text-right">
-              <p className="text-sm text-gray-500">Showing Results</p>
-              <p className="text-2xl font-bold" style={{ color: "#A8C045" }}>
+              <p className="text-sm text-slate-500">Showing Results</p>
+              <p className="text-3xl font-semibold text-[#8DC63F]">
                 {filteredApplications.length} / {applications.length}
               </p>
             </div>
@@ -714,430 +848,178 @@ const AdminApplicationManagement = () => {
 
         {/* Summary Statistics */}
         <div className="grid grid-cols-2 md:grid-cols-7 gap-4 mb-6">
-          <div className="bg-gray-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <FileText className="w-5 h-5 text-gray-500 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <FileText className="w-5 h-5 text-slate-500" />
               <div>
-                <p className="text-sm text-gray-500">Total</p>
-                <p className="text-xl font-bold text-gray-900">
-                  {summaryStats.total}
+                <p className="text-sm text-slate-500">Total</p>
+                <p className="text-xl font-semibold text-slate-900">
+                  {adminSummaryStats.total}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-gray-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <Clock className="w-5 h-5 text-gray-600 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-[#003883]" />
               <div>
-                <p className="text-sm text-gray-600">Draft</p>
-                <p className="text-xl font-bold text-gray-700">
-                  {summaryStats.draft}
+                <p className="text-sm text-slate-500">Submitted</p>
+                <p className="text-xl font-semibold text-[#003883]">
+                  {adminSummaryStats.submitted}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-blue-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <AlertTriangle className="w-5 h-5 text-blue-600 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <Clock className="w-5 h-5 text-[#FF8200]" />
               <div>
-                <p className="text-sm text-blue-600">Submitted</p>
-                <p className="text-xl font-bold text-blue-700">
-                  {summaryStats.submitted}
+                <p className="text-sm text-slate-500">Pending</p>
+                <p className="text-xl font-semibold text-[#FF8200]">
+                  {adminSummaryStats.pending}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-yellow-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <Clock className="w-5 h-5 text-yellow-600 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <AlertTriangle className="w-5 h-5 text-[#FF8200]" />
               <div>
-                <p className="text-sm text-yellow-600">Pending</p>
-                <p className="text-xl font-bold text-yellow-700">
-                  {summaryStats.pending}
+                <p className="text-sm text-slate-500">Under Review</p>
+                <p className="text-xl font-semibold text-[#FF8200]">
+                  {adminSummaryStats.underReview}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-yellow-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <AlertTriangle className="w-5 h-5 text-yellow-600 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="w-5 h-5 text-[#8DC63F]" />
               <div>
-                <p className="text-sm text-yellow-600">Under Review</p>
-                <p className="text-xl font-bold text-yellow-700">
-                  {summaryStats.underReview}
+                <p className="text-sm text-slate-500">Approved</p>
+                <p className="text-xl font-semibold text-[#8DC63F]">
+                  {adminSummaryStats.approved}
                 </p>
               </div>
             </div>
           </div>
-          <div className="bg-green-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <CheckCircle className="w-5 h-5 text-green-600 mr-2" />
+          <div className="bg-white border border-slate-200 rounded-sm p-4">
+            <div className="flex items-center gap-3">
+              <XCircle className="w-5 h-5 text-red-600" />
               <div>
-                <p className="text-sm text-green-600">Approved</p>
-                <p className="text-xl font-bold text-green-700">
-                  {summaryStats.approved}
-                </p>
-              </div>
-            </div>
-          </div>
-          <div className="bg-red-50 rounded-lg p-4">
-            <div className="flex items-center">
-              <XCircle className="w-5 h-5 text-red-600 mr-2" />
-              <div>
-                <p className="text-sm text-red-600">Rejected</p>
-                <p className="text-xl font-bold text-red-700">
-                  {summaryStats.rejected}
+                <p className="text-sm text-slate-500">Rejected</p>
+                <p className="text-xl font-semibold text-red-600">
+                  {adminSummaryStats.rejected}
                 </p>
               </div>
             </div>
           </div>
         </div>
+      </div>
 
-        {/* Enhanced Search and Filter Controls */}
-        <div className="space-y-4">
-          {/* Primary Search and Controls Row */}
-          <div className="flex flex-col md:flex-row gap-4">
-            {/* Search Input */}
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4" />
-              <input
-                type="text"
-                placeholder="Search by name, ID, RSA PIN, PMI company, or representative..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-              {searchTerm && (
-                <button
-                  onClick={() => setSearchTerm("")}
-                  className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            {/* Filter Toggle and Sort */}
-            <div className="flex gap-2">
+      {/* Server-side search input */}
+      <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-4 mb-6">
+        <div className="flex flex-col md:flex-row md:items-center gap-4">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
+            <input
+              type="text"
+              placeholder="Search server-side by name, ID, RSA PIN, PMI company, or representative..."
+              value={apiSearchTerm}
+              onChange={(e) => setApiSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-10 py-3 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+            />
+            {apiSearchTerm && (
               <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`flex items-center px-4 py-3 rounded-lg border transition-colors relative ${
-                  showFilters
-                    ? "bg-[#A8C045] text-white border-[#A8C045]"
-                    : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
-                }`}
+                type="button"
+                onClick={clearServerSearch}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600"
               >
-                <SlidersHorizontal className="w-4 h-4 mr-2" />
-                Filters
-                {activeFiltersCount > 0 && (
-                  <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">
-                    {activeFiltersCount}
-                  </span>
-                )}
+                <X className="w-4 h-4" />
               </button>
-
-              <div className="relative">
+            )}
+          </div>
+          <div className="flex flex-col sm:flex-row items-center gap-3 text-sm text-slate-600">
+            {apiSearchLoading ? (
+              <span>Searching server...</span>
+            ) : apiSearchError ? (
+              <span className="text-red-600">{apiSearchError}</span>
+            ) : apiSearchTerm.trim() ? (
+              <span>
+                {apiSearchResults.length} result
+                {apiSearchResults.length === 1 ? "" : "s"}
+              </span>
+            ) : (
+              <div className="flex items-center gap-2">
+                <label htmlFor="sortBy" className="text-slate-500">
+                  Sort:
+                </label>
                 <select
+                  id="sortBy"
                   value={sortBy}
                   onChange={(e) => setSortBy(e.target.value)}
-                  className="px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent appearance-none bg-white pr-10 min-w-[160px]"
+                  className="px-3 py-2 border border-slate-300 rounded-sm bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-[#8DC63F]"
                 >
-                  <option value="newest">Newest First</option>
-                  <option value="oldest">Oldest First</option>
-                  <option value="amount_high">Loan Amount ↓</option>
-                  <option value="amount_low">Loan Amount ↑</option>
-                  <option value="property_high">Property Value ↓</option>
-                  <option value="property_low">Property Value ↑</option>
-                  <option value="borrower_name">Borrower Name</option>
-                  <option value="status">Status</option>
+                  <option value="newest">Newest first</option>
+                  <option value="oldest">Oldest first</option>
                 </select>
-                <ChevronDown className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none" />
               </div>
-            </div>
+            )}
+            {apiSearchTerm.trim() && (
+              <button
+                type="button"
+                onClick={clearServerSearch}
+                className="text-[#003883] hover:text-[#002d70]"
+              >
+                Clear server search
+              </button>
+            )}
           </div>
-
-          {/* Advanced Filters Panel */}
-          {showFilters && (
-            <div className="bg-gray-50 rounded-lg p-6 space-y-6">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-gray-900">
-                  Advanced Filters
-                </h3>
-                {activeFiltersCount > 0 && (
-                  <button
-                    onClick={clearAllFilters}
-                    className="text-sm text-red-600 hover:text-red-700 font-medium"
-                  >
-                    Clear All Filters
-                  </button>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {/* Status Filter */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Application Status
-                  </label>
-                  <div className="space-y-2">
-                    {Object.entries(statusConfig).map(([status, config]) => (
-                      <label key={status} className="flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={statusFilter.includes(status)}
-                          onChange={() => handleStatusFilterChange(status)}
-                          className="rounded border-gray-300 text-[#A8C045] focus:ring-[#A8C045] mr-2"
-                        />
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${config.bg} ${config.color}`}
-                        >
-                          <span
-                            className={`w-2 h-2 rounded-full ${config.badge} mr-1`}
-                          ></span>
-                          {config.label}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* PMI Company Filter */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    PMI Companies
-                  </label>
-                  <div className="space-y-2 max-h-40 overflow-y-auto">
-                    {pmiCompanies.map((pmi) => (
-                      <label key={pmi} className="flex items-center">
-                        <input
-                          type="checkbox"
-                          checked={pmiFilter.includes(pmi)}
-                          onChange={() => handlePMIFilterChange(pmi)}
-                          className="rounded border-gray-300 text-[#A8C045] focus:ring-[#A8C045] mr-2"
-                        />
-                        <span
-                          className="text-sm text-gray-700 truncate"
-                          title={pmi}
-                        >
-                          {pmi}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Date Range Filter */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Submission Date Range
-                  </label>
-                  <div className="space-y-2">
-                    <input
-                      type="date"
-                      value={dateRange.start}
-                      onChange={(e) =>
-                        setDateRange((prev) => ({
-                          ...prev,
-                          start: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="Start date"
-                    />
-                    <input
-                      type="date"
-                      value={dateRange.end}
-                      onChange={(e) =>
-                        setDateRange((prev) => ({
-                          ...prev,
-                          end: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="End date"
-                    />
-                  </div>
-                </div>
-
-                {/* Loan Amount Range */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Loan Amount Range (₦)
-                  </label>
-                  <div className="space-y-2">
-                    <input
-                      type="number"
-                      value={loanAmountRange.min}
-                      onChange={(e) =>
-                        setLoanAmountRange((prev) => ({
-                          ...prev,
-                          min: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="Minimum amount"
-                    />
-                    <input
-                      type="number"
-                      value={loanAmountRange.max}
-                      onChange={(e) =>
-                        setLoanAmountRange((prev) => ({
-                          ...prev,
-                          max: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="Maximum amount"
-                    />
-                  </div>
-                </div>
-
-                {/* Property Value Range */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-3">
-                    Property Value Range (₦)
-                  </label>
-                  <div className="space-y-2">
-                    <input
-                      type="number"
-                      value={propertyValueRange.min}
-                      onChange={(e) =>
-                        setPropertyValueRange((prev) => ({
-                          ...prev,
-                          min: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="Minimum value"
-                    />
-                    <input
-                      type="number"
-                      value={propertyValueRange.max}
-                      onChange={(e) =>
-                        setPropertyValueRange((prev) => ({
-                          ...prev,
-                          max: e.target.value,
-                        }))
-                      }
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-                      placeholder="Maximum value"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Active Filters Display */}
-          {activeFiltersCount > 0 && (
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium text-gray-700">
-                Active Filters:
-              </span>
-
-              {searchDebounce && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                  Search: "{searchDebounce}"
-                  <button
-                    onClick={() => setSearchTerm("")}
-                    className="ml-1 hover:bg-blue-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-
-              {statusFilter.length > 0 && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                  Status: {statusFilter.length} selected
-                  <button
-                    onClick={() => setStatusFilter([])}
-                    className="ml-1 hover:bg-green-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-
-              {pmiFilter.length > 0 && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
-                  PMI: {pmiFilter.length} selected
-                  <button
-                    onClick={() => setPmiFilter([])}
-                    className="ml-1 hover:bg-purple-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-
-              {(dateRange.start || dateRange.end) && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-orange-100 text-orange-800">
-                  Date Range
-                  <button
-                    onClick={() => setDateRange({ start: "", end: "" })}
-                    className="ml-1 hover:bg-orange-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-
-              {(loanAmountRange.min || loanAmountRange.max) && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-indigo-100 text-indigo-800">
-                  Loan Range
-                  <button
-                    onClick={() => setLoanAmountRange({ min: "", max: "" })}
-                    className="ml-1 hover:bg-indigo-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-
-              {(propertyValueRange.min || propertyValueRange.max) && (
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-pink-100 text-pink-800">
-                  Property Range
-                  <button
-                    onClick={() => setPropertyValueRange({ min: "", max: "" })}
-                    className="ml-1 hover:bg-pink-200 rounded-full p-0.5"
-                  >
-                    <X className="w-3 h-3" />
-                  </button>
-                </span>
-              )}
-            </div>
-          )}
         </div>
       </div>
 
       {/* Applications List with Enhanced Display */}
-      {filteredApplications.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-12 text-center">
+      {displayedApplications.length === 0 ? (
+        <div className="bg-white rounded-sm shadow-sm border border-slate-200 p-12 text-center">
           <div className="flex flex-col items-center">
-            {searchDebounce || activeFiltersCount > 0 ? (
+            {apiSearchTerm.trim() || activeFiltersCount > 0 ? (
               <>
-                <Search className="mx-auto w-12 h-12 text-gray-400 mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">
-                  No Applications Match Your Filters
+                <Search className="mx-auto w-12 h-12 text-slate-400 mb-4" />
+                <h3 className="text-lg font-medium text-slate-900 mb-2">
+                  {apiSearchTerm.trim()
+                    ? `No server-side results found for "${apiSearchTerm}"`
+                    : "No Applications Match Your Filters"}
                 </h3>
-                <p className="text-gray-500 mb-4">
-                  Try adjusting your search criteria or clearing some filters.
+                <p className="text-slate-500 mb-4">
+                  {apiSearchTerm.trim()
+                    ? "Try a different query or clear the server search."
+                    : "Try adjusting your search criteria or clearing some filters."}
                 </p>
-                <button
-                  onClick={clearAllFilters}
-                  className="px-4 py-2 bg-[#A8C045] text-white rounded-lg hover:bg-[#8fa838] transition-colors"
-                >
-                  Clear All Filters
-                </button>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  {apiSearchTerm.trim() ? (
+                    <button
+                      onClick={clearServerSearch}
+                      className="px-4 py-2 bg-[#8DC63F] text-white rounded-sm hover:bg-[#79b334] transition-colors"
+                    >
+                      Clear Server Search
+                    </button>
+                  ) : (
+                    <button
+                      onClick={clearAllFilters}
+                      className="px-4 py-2 bg-[#8DC63F] text-white rounded-sm hover:bg-[#79b334] transition-colors"
+                    >
+                      Clear All Filters
+                    </button>
+                  )}
+                </div>
               </>
             ) : (
               <>
-                <FileText className="mx-auto w-12 h-12 text-gray-400 mb-4" />
-                <h3 className="text-lg font-medium text-gray-900 mb-2">
+                <FileText className="mx-auto w-12 h-12 text-slate-400 mb-4" />
+                <h3 className="text-lg font-medium text-slate-900 mb-2">
                   No Applications Found
                 </h3>
-                <p className="text-gray-500">
+                <p className="text-slate-500">
                   No mortgage applications have been submitted yet.
                 </p>
               </>
@@ -1145,177 +1027,210 @@ const AdminApplicationManagement = () => {
           </div>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {filteredApplications.map((application) => (
-            <div
-              key={application.applicationId}
-              className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 hover:shadow-md transition-all duration-200 hover:border-gray-300"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <div className="flex items-center space-x-3 mb-2">
-                        <h3 className="text-lg font-semibold text-gray-900">
-                          {application.borrowerName}
-                        </h3>
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            statusConfig[normalizeStatus(application.status)]
-                              ?.bg || statusConfig.pending.bg
-                          } ${
-                            statusConfig[normalizeStatus(application.status)]
-                              ?.color || statusConfig.pending.color
-                          }`}
-                        >
+        <>
+          <div className="grid gap-4">
+            {displayedApplications.map((application) => (
+              <div
+                key={application.applicationId}
+                className="bg-white rounded-sm shadow-sm border border-slate-200 p-6 hover:shadow-md transition-all duration-200 hover:border-slate-300"
+              >
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <div className="flex items-center space-x-3 mb-2">
+                          <h3 className="text-lg font-semibold text-gray-900">
+                            {application.borrowerName}
+                          </h3>
                           <span
-                            className={`w-2 h-2 rounded-full ${
+                            className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
                               statusConfig[normalizeStatus(application.status)]
-                                ?.badge || statusConfig.pending.badge
-                            } mr-1`}
-                          ></span>
-                          {statusConfig[normalizeStatus(application.status)]
-                            ?.label || "Unknown"}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-sm text-gray-600">
-                        <p>
-                          Application ID:{" "}
-                          <span className="font-medium">{application.id}</span>
-                        </p>
-                        <p>
-                          RSA PIN:{" "}
-                          <span className="font-medium">
-                            {application.rsaPin}
+                                ?.bg || statusConfig.pending.bg
+                            } ${
+                              statusConfig[normalizeStatus(application.status)]
+                                ?.color || statusConfig.pending.color
+                            }`}
+                          >
+                            <span
+                              className={`w-2 h-2 rounded-full ${
+                                statusConfig[
+                                  normalizeStatus(application.status)
+                                ]?.badge || statusConfig.pending.badge
+                              } mr-1`}
+                            ></span>
+                            {statusConfig[normalizeStatus(application.status)]
+                              ?.label || "Unknown"}
                           </span>
-                        </p>
-                        <p>
-                          PMI Company:{" "}
-                          <span className="font-medium">
-                            {application.pmiCompany}
-                          </span>
-                        </p>
-                        <p>
-                          Representative:{" "}
-                          <span className="font-medium">
-                            {application.pmiRepName}
-                          </span>
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="flex items-center mb-1">
-                        <p className="text-xs text-gray-500">Loan Amount</p>
-                      </div>
-                      <p className="font-semibold text-gray-900 text-sm">
-                        {formatCurrency(application.loanAmount)}
-                      </p>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="flex items-center mb-1">
-                        <MapPin className="w-4 h-4 text-gray-500 mr-1" />
-                        <p className="text-xs text-gray-500">Property Value</p>
-                      </div>
-                      <p className="font-semibold text-gray-900 text-sm">
-                        {formatCurrency(application.propertyValue)}
-                      </p>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="flex items-center mb-1">
-                        <Calendar className="w-4 h-4 text-gray-500 mr-1" />
-                        <p className="text-xs text-gray-500">Submitted</p>
-                      </div>
-                      <p className="font-semibold text-gray-900 text-sm">
-                        {formatDate(application.submissionDate)}
-                      </p>
-                    </div>
-                    <div className="bg-gray-50 rounded-lg p-3">
-                      <div className="flex items-center mb-1">
-                        <FileText className="w-4 h-4 text-gray-500 mr-1" />
-                        <p className="text-xs text-gray-500">Documents</p>
-                      </div>
-                      <p className="font-semibold text-gray-900 text-sm">
-                        {application.documentCount} files
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Enhanced Progress Bar for LTV Ratio */}
-                  <div className="mb-4">
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs text-gray-600">
-                        Loan-to-Value Ratio
-                      </span>
-                      <span className="text-xs font-medium text-gray-700">
-                        {(
-                          (application.loanAmount / application.propertyValue) *
-                          100
-                        ).toFixed(1)}
-                        %
-                      </span>
-                    </div>
-                    <div className="w-full bg-gray-200 rounded-full h-2">
-                      <div
-                        className="bg-[#A8C045] h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${Math.min(
-                            (application.loanAmount /
-                              application.propertyValue) *
-                              100,
-                            100
-                          )}%`,
-                        }}
-                      ></div>
-                    </div>
-                  </div>
-
-                  {application.rejectionReason && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
-                      <div className="flex items-start">
-                        <XCircle className="w-4 h-4 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
-                        <div>
-                          <p className="text-sm font-medium text-red-800 mb-1">
-                            Application Rejected
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-1 text-sm text-gray-600">
+                          <p>
+                            Application ID:{" "}
+                            <span className="font-medium">
+                              {application.id}
+                            </span>
                           </p>
-                          <p className="text-sm text-red-700">
-                            {application.rejectionReason}
+                          <p>
+                            RSA PIN:{" "}
+                            <span className="font-medium">
+                              {application.rsaPin}
+                            </span>
+                          </p>
+                          <p>
+                            PMI Company:{" "}
+                            <span className="font-medium">
+                              {application.pmiCompany}
+                            </span>
+                          </p>
+                          <p>
+                            Representative:{" "}
+                            <span className="font-medium">
+                              {application.pmiRepName}
+                            </span>
                           </p>
                         </div>
                       </div>
                     </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                      <div className="bg-slate-50 rounded-sm p-3">
+                        <div className="flex items-center mb-1">
+                          <p className="text-xs text-slate-500">Loan Amount</p>
+                        </div>
+                        <p className="font-semibold text-slate-900 text-sm">
+                          {formatCurrency(application.loanAmount)}
+                        </p>
+                      </div>
+                      <div className="bg-slate-50 rounded-sm p-3">
+                        <div className="flex items-center mb-1">
+                          <MapPin className="w-4 h-4 text-slate-500 mr-1" />
+                          <p className="text-xs text-slate-500">
+                            Property Value
+                          </p>
+                        </div>
+                        <p className="font-semibold text-slate-900 text-sm">
+                          {formatCurrency(application.propertyValue)}
+                        </p>
+                      </div>
+                      <div className="bg-slate-50 rounded-sm p-3">
+                        <div className="flex items-center mb-1">
+                          <Calendar className="w-4 h-4 text-slate-500 mr-1" />
+                          <p className="text-xs text-slate-500">Submitted</p>
+                        </div>
+                        <p className="font-semibold text-slate-900 text-sm">
+                          {formatDate(application.submissionDate)}
+                        </p>
+                      </div>
+                      <div className="bg-slate-50 rounded-sm p-3">
+                        <div className="flex items-center mb-1">
+                          <FileText className="w-4 h-4 text-slate-500 mr-1" />
+                          <p className="text-xs text-slate-500">Documents</p>
+                        </div>
+                        <p className="font-semibold text-slate-900 text-sm"></p>
+                      </div>
+                    </div>
+
+                    {/* Enhanced Progress Bar for LTV Ratio */}
+                    <div className="mb-4">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-xs text-gray-600">
+                          Loan-to-Value Ratio
+                        </span>
+                        <span className="text-xs font-medium text-gray-700">
+                          {(
+                            (application.loanAmount /
+                              application.propertyValue) *
+                            100
+                          ).toFixed(1)}
+                          %
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-[#A8C045] h-2 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.min(
+                              (application.loanAmount /
+                                application.propertyValue) *
+                                100,
+                              100,
+                            )}%`,
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+
+                    {application.rejectionReason && (
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                        <div className="flex items-start">
+                          <XCircle className="w-4 h-4 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm font-medium text-red-800 mb-1">
+                              Application Rejected
+                            </p>
+                            <p className="text-sm text-red-700">
+                              {application.rejectionReason}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {application.status !== "draft" && (
+                    <div className="flex flex-col space-y-2 ml-6">
+                      <button
+                        onClick={() => handleViewDetails(application)}
+                        className="flex items-center px-4 py-2 bg-slate-100 text-slate-700 rounded-sm hover:bg-slate-200 transition-colors whitespace-nowrap"
+                      >
+                        <Eye className="w-4 h-4 mr-2" />
+                        View Details
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedApplication(application);
+                          setNewStatus(application.status);
+                          setShowStatusModal(true);
+                        }}
+                        className="flex items-center px-4 py-2 bg-[#003883] text-white rounded-sm hover:bg-[#002d70] transition-colors whitespace-nowrap"
+                      >
+                        <Settings className="w-4 h-4 mr-2" />
+                        Update Status
+                      </button>
+                    </div>
                   )}
                 </div>
-
-                {application.status !== "draft" && (
-                  <div className="flex flex-col space-y-2 ml-6">
-                    <button
-                      onClick={() => handleViewDetails(application)}
-                      className="flex items-center px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors whitespace-nowrap"
-                    >
-                      <Eye className="w-4 h-4 mr-2" />
-                      View Details
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSelectedApplication(application);
-                        setNewStatus(application.status);
-                        setShowStatusModal(true);
-                      }}
-                      className="flex items-center px-4 py-2 text-white rounded-lg hover:opacity-90 transition-colors whitespace-nowrap"
-                      style={{ backgroundColor: "#A8C045" }}
-                    >
-                      <Settings className="w-4 h-4 mr-2" />
-                      Update Status
-                    </button>
-                  </div>
-                )}
+              </div>
+            ))}
+          </div>
+          {!apiSearchTerm.trim() && totalPages > 1 && (
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white border border-slate-200 rounded-sm px-4 py-3">
+              <p className="text-sm text-slate-600">
+                Page {pageNumber} of {totalPages} — {totalCount} total
+                applications
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
+                  disabled={!hasPreviousPage}
+                  className="px-3 py-2 rounded-sm border text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white border-slate-300 hover:bg-slate-50"
+                >
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPageNumber(Math.min(totalPages, pageNumber + 1))
+                  }
+                  disabled={!hasNextPage}
+                  className="px-3 py-2 rounded-sm border text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white border-slate-300 hover:bg-slate-50"
+                >
+                  Next
+                </button>
               </div>
             </div>
-          ))}
-        </div>
+          )}
+        </>
       )}
 
       {/* Enhanced Application Details Modal */}
@@ -1340,7 +1255,7 @@ const AdminApplicationManagement = () => {
                     {React.createElement(
                       statusConfig[normalizeStatus(selectedApplication.status)]
                         ?.icon || Clock,
-                      { className: "w-4 h-4 mr-2" }
+                      { className: "w-4 h-4 mr-2" },
                     )}
                     {statusConfig[normalizeStatus(selectedApplication.status)]
                       ?.label || "Unknown"}
@@ -1390,7 +1305,7 @@ const AdminApplicationManagement = () => {
                       {Math.floor(
                         (new Date() -
                           new Date(selectedApplication.submissionDate)) /
-                          (1000 * 60 * 60 * 24)
+                          (1000 * 60 * 60 * 24),
                       )}
                     </p>
                   </div>
@@ -1523,7 +1438,7 @@ const AdminApplicationManagement = () => {
                           </p>
                           <p className="font-medium">
                             {formatCurrency(
-                              selectedApplication.supplementaryValue
+                              selectedApplication.supplementaryValue,
                             )}
                           </p>
                         </div>
@@ -1552,7 +1467,7 @@ const AdminApplicationManagement = () => {
                                     (selectedApplication.loanAmount /
                                       selectedApplication.propertyValue) *
                                       100,
-                                    100
+                                    100,
                                   )}%`,
                                 }}
                               ></div>
@@ -1617,7 +1532,7 @@ const AdminApplicationManagement = () => {
                             {Math.floor(
                               (new Date() -
                                 new Date(selectedApplication.submissionDate)) /
-                                (1000 * 60 * 60 * 24)
+                                (1000 * 60 * 60 * 24),
                             )}{" "}
                             days
                           </p>
@@ -1841,7 +1756,7 @@ const AdminApplicationManagement = () => {
                   {React.createElement(
                     statusConfig[normalizeStatus(selectedApplication.status)]
                       ?.icon || Clock,
-                    { className: "w-3 h-3 mr-1" }
+                    { className: "w-3 h-3 mr-1" },
                   )}
                   {statusConfig[normalizeStatus(selectedApplication.status)]
                     ?.label || "Unknown"}
@@ -1855,7 +1770,7 @@ const AdminApplicationManagement = () => {
                 <div className="space-y-2">
                   {Object.entries(statusConfig)
                     .filter(
-                      ([status]) => status !== "draft" && status !== "returned"
+                      ([status]) => status !== "draft" && status !== "returned",
                     ) // Hide draft and returned status for admin updates
                     .map(([status, config]) => (
                       <label key={status} className="flex items-center">

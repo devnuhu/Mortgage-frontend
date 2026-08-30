@@ -2,327 +2,317 @@ import React, { useState, useEffect } from "react";
 import {
   Download,
   Filter,
-  Calendar,
   Loader2,
   AlertCircle,
   ChevronLeft,
   ChevronRight,
+  Search,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import ConfirmModal from "../ui/ConfirmModal";
-import { getAllApplications } from "../../services/application-api";
+import {
+  generateApplicationReport,
+  getReportSummary,
+  exportApplicationReportExcel,
+  formatCurrency,
+  formatDate,
+} from "../../services/applicationService";
+import { triggerFileDownload } from "../../services/api";
 
 const Reports = () => {
   const [applications, setApplications] = useState([]);
-  const [filteredApplications, setFilteredApplications] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
-  const [startSubmittedDate, setStartSubmittedDate] = useState("");
-  const [endSubmittedDate, setEndSubmittedDate] = useState("");
-  const [startUpdatedDate, setStartUpdatedDate] = useState("");
-  const [endUpdatedDate, setEndUpdatedDate] = useState("");
-  const [selectedPMI, setSelectedPMI] = useState("");
-  const [selectedStatus, setSelectedStatus] = useState("");
-  const [applicantName, setApplicantName] = useState("");
-  const [pmiRepName, setPmiRepName] = useState("");
-  const [pmiList, setPmiList] = useState([]);
-  const [statusList, setStatusList] = useState([]);
-  const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(10);
+  const [isExporting, setIsExporting] = useState(false);
+
+  // Filter states
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [dateField, setDateField] = useState("CreatedAt");
+  const [statuses, setStatuses] = useState([]);
+  const [priorities, setPriorities] = useState([]);
+  const [pmiCompanyId, setPmiCompanyId] = useState("");
+  const [userId, setUserId] = useState("");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sortBy, setSortBy] = useState("CreatedAt");
+  const [sortDescending, setSortDescending] = useState(true);
+
+  const [initialLoading, setInitialLoading] = useState(true);
+
+  // Pagination states
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageSize, setPageSize] = useState(100);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const [hasPreviousPage, setHasPreviousPage] = useState(false);
+
+  // UI states
+  const [showFilters, setShowFilters] = useState(false);
   const [showExportConfirm, setShowExportConfirm] = useState(false);
 
-  // Load all applications on component mount
-  useEffect(() => {
-    loadApplications();
-  }, []);
+  // Status and priority options
+  const priorityOptions = [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "urgent", label: "Urgent" },
+  ];
 
-  const loadApplications = async () => {
+  const statusOptions = [
+    { value: "draft", label: "Draft" },
+    { value: "submitted", label: "Submitted" },
+    { value: "under_review", label: "Under Review" },
+    { value: "approved", label: "Approved" },
+    { value: "rejected", label: "Rejected" },
+    { value: "returned", label: "Returned" },
+    { value: "pending", label: "Pending" },
+  ];
+
+  const getStatusLabel = (statusValue) => {
+    return (
+      statusOptions.find((option) => option.value === statusValue)?.label ||
+      statusValue
+    );
+  };
+
+  const dateFieldOptions = [
+    { value: "CreatedAt", label: "Created Date" },
+    { value: "SubmittedAt", label: "Submitted Date" },
+    { value: "UpdatedAt", label: "Updated Date" },
+  ];
+
+  const sortOptions = [
+    { value: "CreatedAt", label: "Created Date" },
+    { value: "SubmittedAt", label: "Submitted Date" },
+    { value: "UpdatedAt", label: "Updated Date" },
+    { value: "ApplicationNumber", label: "Application Number" },
+    { value: "FirstName", label: "First Name" },
+    { value: "LastName", label: "Last Name" },
+  ];
+
+  // Load applications with current filters
+  const loadApplications = async (page = pageNumber) => {
     try {
       setLoading(true);
       setError(null);
-      const data = await getAllApplications();
-      setApplications(data || []);
-      setFilteredApplications(data || []);
 
-      // Extract unique PMI companies
-      const pmiCompanies = [
-        ...new Set(
-          data
-            ?.filter((app) => app.pmiCompanyName)
-            .map((app) => app.pmiCompanyName)
-        ),
-      ].sort();
-      setPmiList(pmiCompanies);
+      const filters = {
+        pageNumber: page,
+        pageSize,
+        dateFrom,
+        dateTo,
+        dateField,
+        statuses: statuses.length > 0 ? statuses : undefined,
+        priorities: priorities.length > 0 ? priorities : undefined,
+        pmiCompanyId: pmiCompanyId || undefined,
+        userId: userId || undefined,
+        searchTerm: searchTerm || undefined,
+        sortBy,
+        sortDescending,
+      };
 
-      // Extract unique statuses
-      const statuses = [
-        ...new Set(data?.filter((app) => app.status).map((app) => app.status)),
-      ].sort();
-      setStatusList(statuses);
+      const response = await generateApplicationReport(filters);
+
+      setApplications(response.data || []);
+      setTotalCount(response.totalCount || 0);
+      setTotalPages(response.totalPages || 1);
+      setHasNextPage(response.hasNextPage || false);
+      setHasPreviousPage(response.hasPreviousPage || false);
+      setSummary(response.summary || null);
+
+      // Update page number if it changed
+      setPageNumber(page);
     } catch (err) {
       console.error("Error loading applications:", err);
       setError("Failed to load applications. Please try again.");
       toast.error("Failed to load applications");
     } finally {
       setLoading(false);
+      setInitialLoading(false);
     }
   };
 
-  // Filter applications by all criteria
+  // Load summary statistics
+  const loadSummary = async () => {
+    try {
+      const filters = {
+        dateFrom,
+        dateTo,
+        dateField,
+        statuses: statuses.length > 0 ? statuses : undefined,
+        priorities: priorities.length > 0 ? priorities : undefined,
+        pmiCompanyId: pmiCompanyId || undefined,
+        userId: userId || undefined,
+        searchTerm: searchTerm || undefined,
+      };
+
+      const summaryData = await getReportSummary(filters);
+      setSummary(summaryData);
+    } catch (err) {
+      console.error("Error loading summary:", err);
+      // Don't show error for summary, it's optional
+    }
+  };
+
+  // Load data when page changes
   useEffect(() => {
-    let filtered = [...applications];
+    loadApplications(pageNumber);
+  }, [pageNumber]);
 
-    // Created date range filter
-    if (startDate) {
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-      filtered = filtered.filter((app) => {
-        const appDate = new Date(app.createdAt);
-        return appDate >= start;
-      });
-    }
+  // Reset to first page and reload when filters change
+  useEffect(() => {
+    const timeoutId = setTimeout(() => {
+      if (pageNumber !== 1) {
+        setPageNumber(1);
+      } else {
+        loadApplications(1);
+      }
+    }, 500); // Debounce filter changes
 
-    if (endDate) {
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      filtered = filtered.filter((app) => {
-        const appDate = new Date(app.createdAt);
-        return appDate <= end;
-      });
-    }
-
-    // Submitted date range filter
-    if (startSubmittedDate) {
-      const start = new Date(startSubmittedDate);
-      start.setHours(0, 0, 0, 0);
-      filtered = filtered.filter((app) => {
-        if (!app.submittedAt) return false;
-        const appDate = new Date(app.submittedAt);
-        return appDate >= start;
-      });
-    }
-
-    if (endSubmittedDate) {
-      const end = new Date(endSubmittedDate);
-      end.setHours(23, 59, 59, 999);
-      filtered = filtered.filter((app) => {
-        if (!app.submittedAt) return false;
-        const appDate = new Date(app.submittedAt);
-        return appDate <= end;
-      });
-    }
-
-    // Updated date range filter
-    if (startUpdatedDate) {
-      const start = new Date(startUpdatedDate);
-      start.setHours(0, 0, 0, 0);
-      filtered = filtered.filter((app) => {
-        const appDate = new Date(app.updatedAt);
-        return appDate >= start;
-      });
-    }
-
-    if (endUpdatedDate) {
-      const end = new Date(endUpdatedDate);
-      end.setHours(23, 59, 59, 999);
-      filtered = filtered.filter((app) => {
-        const appDate = new Date(app.updatedAt);
-        return appDate <= end;
-      });
-    }
-
-    // PMI Company filter
-    if (selectedPMI) {
-      filtered = filtered.filter((app) => app.pmiCompanyName === selectedPMI);
-    }
-
-    // Status filter
-    if (selectedStatus) {
-      filtered = filtered.filter((app) => app.status === selectedStatus);
-    }
-
-    // Applicant name filter (case-insensitive search)
-    if (applicantName) {
-      const searchName = applicantName.toLowerCase();
-      filtered = filtered.filter((app) => {
-        const fullName = `${app.firstName} ${app.middleName || ""} ${
-          app.lastName
-        }`.toLowerCase();
-        return fullName.includes(searchName);
-      });
-    }
-
-    // PMI Rep name filter (case-insensitive search)
-    if (pmiRepName) {
-      const searchRep = pmiRepName.toLowerCase();
-      filtered = filtered.filter((app) => {
-        const repName = (app.pmiRepName || "").toLowerCase();
-        return repName.includes(searchRep);
-      });
-    }
-
-    setFilteredApplications(filtered);
-    setCurrentPage(1); // Reset to first page when filtering
+    return () => clearTimeout(timeoutId);
   }, [
-    startDate,
-    endDate,
-    startSubmittedDate,
-    endSubmittedDate,
-    startUpdatedDate,
-    endUpdatedDate,
-    selectedPMI,
-    selectedStatus,
-    applicantName,
-    pmiRepName,
-    applications,
+    dateFrom,
+    dateTo,
+    dateField,
+    statuses,
+    priorities,
+    pmiCompanyId,
+    userId,
+    searchTerm,
+    sortBy,
+    sortDescending,
+    pageSize,
   ]);
 
-  // Pagination
-  const totalPages = Math.ceil(filteredApplications.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
-  const paginatedApplications = filteredApplications.slice(
-    startIndex,
-    startIndex + itemsPerPage
-  );
-
-  // Format currency
-  const formatCurrency = (value) => {
-    if (!value) return "₦0";
-    return new Intl.NumberFormat("en-NG", {
-      style: "currency",
-      currency: "NGN",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 0,
-    }).format(value);
+  // Handle priority filter changes
+  const handlePriorityChange = (priority) => {
+    setPriorities((prev) =>
+      prev.includes(priority)
+        ? prev.filter((p) => p !== priority)
+        : [...prev, priority],
+    );
   };
 
-  // Format date
-  const formatDate = (dateString) => {
-    if (!dateString) return "-";
-    const date = new Date(dateString);
-    return date.toLocaleDateString("en-NG", {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
+  const handleStatusSelect = (event) => {
+    const selected = Array.from(
+      event.target.selectedOptions,
+      (option) => option.value,
+    );
+    setStatuses(selected);
+  };
+
+  // Clear all filters
+  const clearFilters = () => {
+    setDateFrom("");
+    setDateTo("");
+    setDateField("CreatedAt");
+    setStatuses([]);
+    setPriorities([]);
+    setPmiCompanyId("");
+    setUserId("");
+    setSearchTerm("");
+    setSortBy("CreatedAt");
+    setSortDescending(true);
+    setPageNumber(1);
+    toast.success("All filters cleared");
   };
 
   // Get status color
   const getStatusColor = (status) => {
     const statusMap = {
-      draft: "bg-gray-100 text-gray-800",
       submitted: "bg-blue-100 text-blue-800",
       under_review: "bg-yellow-100 text-yellow-800",
       approved: "bg-green-100 text-green-800",
       rejected: "bg-red-100 text-red-800",
       returned: "bg-orange-100 text-orange-800",
+      completed: "bg-purple-100 text-purple-800",
     };
     return statusMap[status] || "bg-gray-100 text-gray-800";
   };
 
+  const getDownloadFilename = (contentDisposition) => {
+    if (!contentDisposition) return null;
+    const filenameMatch = contentDisposition.match(/filename\*?=([^;\n]+)/i);
+    if (!filenameMatch) return null;
+
+    let filename = filenameMatch[1].trim();
+    filename = filename.replace(/^(UTF-8''|utf-8''|"|')/, "");
+    filename = filename.replace(/("|')$/, "");
+    return filename;
+  };
+
   // Show confirmation before exporting
   const confirmExport = () => {
-    if (filteredApplications.length === 0) {
+    if (applications.length === 0) {
       toast.error("No data to export");
       return;
     }
     setShowExportConfirm(true);
   };
 
-  // Export to Excel
-  const exportToExcel = () => {
-    if (filteredApplications.length === 0) {
+  const exportToExcel = async (toastId = null) => {
+    if (applications.length === 0) {
       toast.error("No data to export");
+      setShowExportConfirm(false);
       return;
     }
 
+    setIsExporting(true);
+
     try {
-      // Prepare CSV content
-      const headers = [
-        "Application Number",
-        "Status",
-        "Full Name",
-        "RSA PIN",
-        "Equity Value",
-        "Supplementary Value",
-        "Loan Amount",
-        "Property Value",
-        "PMI Rep Name",
-        "PMI Company",
-        "User Name",
-        "Created Date",
-        "Submitted Date",
-        "Updated Date",
-        "Document Count",
-      ];
+      const filters = {
+        dateFrom,
+        dateTo,
+        dateField,
+        statuses: statuses.length > 0 ? statuses : undefined,
+        priorities: priorities.length > 0 ? priorities : undefined,
+        pmiCompanyId: pmiCompanyId || undefined,
+        userId: userId || undefined,
+        searchTerm: searchTerm || undefined,
+        sortBy,
+        sortDescending,
+      };
 
-      const csvContent = [
-        headers.join(","),
-        ...filteredApplications.map((app) =>
-          [
-            app.applicationNumber || "-",
-            app.status || "-",
-            `${app.firstName} ${app.middleName || ""} ${app.lastName}`.trim(),
-            app.rsaPin || "-",
-            app.equityValue || 0,
-            app.supplementaryValue || 0,
-            app.loanAmount || 0,
-            app.propertyValue || 0,
-            app.pmiRepName || "-",
-            app.pmiCompanyName || "-",
-            app.userName || "-",
-            new Date(app.createdAt).toLocaleString("en-NG"),
-            app.submittedAt
-              ? new Date(app.submittedAt).toLocaleString("en-NG")
-              : "-",
-            new Date(app.updatedAt).toLocaleString("en-NG"),
-            app.documentCount || 0,
-          ].join(",")
-        ),
-      ].join("\n");
+      const response = await exportApplicationReportExcel(filters);
+      const contentDisposition =
+        response.headers["content-disposition"] ||
+        response.headers["Content-Disposition"];
+      const filename =
+        getDownloadFilename(contentDisposition) ||
+        `Applications_Export_${new Date()
+          .toISOString()
+          .replace(/[:.]/g, "-")}.xlsx`;
 
-      // Create blob and download
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-      const link = document.createElement("a");
-      const url = URL.createObjectURL(blob);
-
-      link.setAttribute("href", url);
-      link.setAttribute(
-        "download",
-        `applications_report_${new Date().toISOString().split("T")[0]}.csv`
-      );
-      link.style.visibility = "hidden";
-
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      toast.success("Report exported successfully!");
+      triggerFileDownload(response.data, filename);
+      if (toastId) {
+        toast.success("Excel report downloaded successfully", { id: toastId });
+      } else {
+        toast.success("Excel report downloaded successfully");
+      }
     } catch (err) {
-      console.error("Error exporting to Excel:", err);
-      toast.error("Failed to export report");
+      console.error("Export failed:", err);
+      if (toastId) {
+        toast.error(err?.message || "Failed to download Excel report", {
+          id: toastId,
+        });
+      } else {
+        toast.error(err?.message || "Failed to download Excel report");
+      }
+    } finally {
+      setIsExporting(false);
+      setShowExportConfirm(false);
     }
   };
 
-  // Clear filters
-  const clearFilters = () => {
-    setStartDate("");
-    setEndDate("");
-    setStartSubmittedDate("");
-    setEndSubmittedDate("");
-    setStartUpdatedDate("");
-    setEndUpdatedDate("");
-    setSelectedPMI("");
-    setSelectedStatus("");
-    setApplicantName("");
-    setPmiRepName("");
+  const handleExportConfirm = async () => {
+    setShowExportConfirm(false);
+    const exportToastId = toast.loading("Processing report export...");
+    await exportToExcel(exportToastId);
   };
 
-  if (loading) {
+  if (initialLoading) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
@@ -335,16 +325,22 @@ const Reports = () => {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="w-full mx-auto px-3 sm:px-4 lg:px-6 py-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">
-            Applications Report
-          </h1>
-          <p className="text-gray-600 mt-2">
-            Total Applications:{" "}
-            <span className="font-semibold">{filteredApplications.length}</span>
-          </p>
+        <div className="mb-8 bg-white border border-slate-200 shadow-sm rounded-sm p-6">
+          <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h1 className="text-3xl font-semibold text-slate-900">
+                Applications Report
+              </h1>
+              <p className="text-slate-600 mt-2 max-w-2xl">
+                Enterprise-grade export and reporting for application workflows.
+              </p>
+            </div>
+            <div className="rounded-sm border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              Use the filters below to refine the report, then export to Excel.
+            </div>
+          </div>
         </div>
 
         {error && (
@@ -354,195 +350,253 @@ const Reports = () => {
           </div>
         )}
 
-        {/* Filters and Export */}
-        <div className="bg-white rounded-lg shadow-sm p-4 mb-6">
-          <div className="flex items-center mb-3">
-            <h2 className="text-base font-semibold text-gray-900 flex items-center">
-              <Filter className="w-4 h-4 mr-2" />
-              Filters
+        {/* Summary Statistics */}
+        {summary && (
+          <div className="grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4 mb-6">
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-slate-900">
+                {summary.totalRecords ?? summary.totalCount ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">
+                Total Applications
+              </div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-[#003883]">
+                {summary.submittedCount ?? summary.submitted ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Submitted</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-[#FF8200]">
+                {summary.underReviewCount ?? summary.underReview ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Under Review</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-[#8DC63F]">
+                {summary.approvedCount ?? summary.approved ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Approved</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-red-600">
+                {summary.rejectedCount ?? summary.rejected ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Rejected</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-[#FF8200]">
+                {summary.returnedCount ?? summary.returned ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Returned</div>
+            </div>
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-5 text-center">
+              <div className="text-2xl font-semibold text-slate-700">
+                {summary.completedCount ?? summary.completed ?? 0}
+              </div>
+              <div className="text-sm text-slate-600 mt-2">Completed</div>
+            </div>
+          </div>
+        )}
+
+        {/* Filters and Controls */}
+        <div className="bg-white border border-slate-200 rounded-sm shadow-sm p-6 mb-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
+            <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+              <Filter className="w-5 h-5 text-[#003883]" />
+              Advanced Filters
             </h2>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className="px-4 py-2 text-sm bg-slate-100 text-slate-700 rounded-sm border border-slate-200 hover:bg-slate-200"
+              >
+                {showFilters ? "Hide Filters" : "Show Filters"}
+              </button>
+              <button
+                onClick={clearFilters}
+                className="px-4 py-2 text-sm bg-[#FF8200] text-white rounded-sm hover:bg-[#e96f00]"
+              >
+                Clear All
+              </button>
+              <button
+                onClick={confirmExport}
+                disabled={isExporting}
+                className="px-4 py-2 text-sm bg-[#003883] text-white rounded-sm hover:bg-[#002d70] flex items-center disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                <Download className="w-4 h-4 mr-2" />
+                {isExporting ? "Exporting..." : "Export Excel"}
+              </button>
+            </div>
           </div>
 
-          {/* Single Row: All Filters */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-8 gap-2">
-            {/* Created Start Date */}
+          {/* Quick Filters Row */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-4">
+            {/* Date Range */}
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Created From
-              </label>
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* Created End Date */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Created To
-              </label>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* Submitted Start Date */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Submitted From
-              </label>
-              <input
-                type="date"
-                value={startSubmittedDate}
-                onChange={(e) => setStartSubmittedDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* Submitted End Date */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Submitted To
-              </label>
-              <input
-                type="date"
-                value={endSubmittedDate}
-                onChange={(e) => setEndSubmittedDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* Updated Start Date */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Updated From
-              </label>
-              <input
-                type="date"
-                value={startUpdatedDate}
-                onChange={(e) => setStartUpdatedDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* Updated End Date */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Updated To
-              </label>
-              <input
-                type="date"
-                value={endUpdatedDate}
-                onChange={(e) => setEndUpdatedDate(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
-
-            {/* PMI Company */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                PMI
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Date Field
               </label>
               <select
-                value={selectedPMI}
-                onChange={(e) => setSelectedPMI(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent bg-white"
+                value={dateField}
+                onChange={(e) => setDateField(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
               >
-                <option value="">All</option>
-                {pmiList.map((pmi) => (
-                  <option key={pmi} value={pmi}>
-                    {pmi.substring(0, 15)}
+                {dateFieldOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
             </div>
-
-            {/* Status */}
             <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                From Date
+              </label>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                To Date
+              </label>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
                 Status
               </label>
               <select
-                value={selectedStatus}
-                onChange={(e) => setSelectedStatus(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent bg-white"
+                multiple
+                value={statuses}
+                onChange={handleStatusSelect}
+                className="w-full h-28 px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
               >
-                <option value="">All</option>
-                {statusList.map((status) => (
-                  <option key={status} value={status}>
-                    {status.replace(/_/g, " ").substring(0, 10)}
+                {statusOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
                   </option>
                 ))}
               </select>
+              {statuses.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {statuses.map((status) => (
+                    <span
+                      key={status}
+                      className="inline-flex items-center rounded-full bg-[#A8C045] bg-opacity-15 px-2.5 py-1 text-xs font-medium text-emerald-900"
+                    >
+                      {getStatusLabel(status)}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+            {/* Search Term */}
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-2">
+                Search Applications
+              </label>
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
+                <input
+                  type="text"
+                  placeholder="Name, ID, RSA PIN, company..."
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+                />
+              </div>
             </div>
           </div>
 
-          {/* Second Row: Search Filters + Actions */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-2">
-            {/* Applicant Name */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Applicant
-              </label>
-              <input
-                type="text"
-                placeholder="Name..."
-                value={applicantName}
-                onChange={(e) => setApplicantName(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
+          {/* Advanced Filters */}
+          {showFilters && (
+            <div className="border-t pt-4 mt-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                {/* Priority Filters */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-3">
+                    Priority Level
+                  </label>
+                  <div className="space-y-2">
+                    {priorityOptions.map((priority) => (
+                      <label key={priority.value} className="flex items-center">
+                        <input
+                          type="checkbox"
+                          checked={priorities.includes(priority.value)}
+                          onChange={() => handlePriorityChange(priority.value)}
+                          className="rounded border-gray-300 text-[#A8C045] focus:ring-[#A8C045] mr-2"
+                        />
+                        <span className="text-sm text-gray-700">
+                          {priority.label}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
 
-            {/* PMI Rep Name */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                PMI Rep
-              </label>
-              <input
-                type="text"
-                placeholder="Rep name..."
-                value={pmiRepName}
-                onChange={(e) => setPmiRepName(e.target.value)}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-[#A8C045] focus:border-transparent"
-              />
-            </div>
+                {/* Sort Options */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-3">
+                    Sort By
+                  </label>
+                  <select
+                    value={sortBy}
+                    onChange={(e) => setSortBy(e.target.value)}
+                    className="w-full px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+                  >
+                    {sortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="mt-2">
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={!sortDescending}
+                        onChange={(e) => setSortDescending(!e.target.checked)}
+                        className="rounded border-gray-300 text-[#A8C045] focus:ring-[#A8C045] mr-2"
+                      />
+                      <span className="text-sm text-gray-700">Ascending</span>
+                    </label>
+                  </div>
+                </div>
 
-            {/* Clear Button */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                &nbsp;
-              </label>
-              <button
-                onClick={clearFilters}
-                className="w-full px-2 py-1 text-sm border border-gray-300 rounded text-gray-700 hover:bg-gray-50 transition-colors"
-              >
-                Clear
-              </button>
+                {/* Page Size */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-3">
+                    Items Per Page
+                  </label>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-slate-300 bg-slate-50 rounded-sm focus:ring-2 focus:ring-[#8DC63F] focus:border-transparent"
+                  >
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                    <option value={500}>500</option>
+                  </select>
+                </div>
+              </div>
             </div>
-
-            {/* Export Button */}
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                &nbsp;
-              </label>
-              <button
-                onClick={exportToExcel}
-                className="w-full px-2 py-1 text-sm bg-[#A8C045] text-white rounded hover:bg-green-600 transition-colors flex items-center justify-center whitespace-nowrap"
-              >
-                <Download className="w-3 h-3 mr-1" />
-                Export
-              </button>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Results */}
-        {filteredApplications.length === 0 ? (
+        {applications.length === 0 ? (
           <div className="bg-white rounded-lg shadow-sm p-8 text-center">
             <AlertCircle className="w-12 h-12 text-gray-300 mx-auto mb-4" />
             <p className="text-gray-500 text-lg">
@@ -552,63 +606,71 @@ const Reports = () => {
         ) : (
           <>
             {/* Table */}
-            <div className="bg-white rounded-lg shadow-sm overflow-hidden">
+            <div className="bg-white border border-slate-200 rounded-sm shadow-sm overflow-hidden">
               <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-gray-50 border-b border-gray-200">
+                <table className="min-w-full divide-y divide-slate-200">
+                  <thead className="bg-slate-100 border-b border-slate-200">
                     <tr>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Application #
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Applicant Name
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         RSA PIN
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         PMI Company
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                        PMI Rep Name
-                      </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Property Value
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Loan Amount
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Status
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                        Assigned Reviewer
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                        Reviewer Email
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                        Assigned At
+                      </th>
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Created
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Submitted
                       </th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                      <th className="px-6 py-3 text-left text-xs font-semibold text-slate-600 uppercase tracking-wider">
                         Docs
                       </th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-gray-200">
-                    {paginatedApplications.map((app) => (
-                      <tr key={app.id} className="hover:bg-gray-50">
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                  <tbody className="divide-y divide-slate-200 bg-white">
+                    {applications.map((app) => (
+                      <tr key={app.id} className="hover:bg-slate-50">
+                        <td className="px-5 py-4 whitespace-nowrap text-sm font-semibold text-slate-900">
                           {app.applicationNumber}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                          {`${app.firstName} ${app.lastName}`.trim()}
+                          {app.applicantName ||
+                            `${app.firstName || ""} ${app.middleName || ""} ${app.lastName || ""}`.trim() ||
+                            "-"}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
                           {app.rsaPin || "-"}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                          {app.pmiCompanyName || "-"}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
-                          {app.pmiRepName || "-"}
+                          {app.pmiCompany ||
+                            app.pmiCompanyName ||
+                            app.companyName ||
+                            "-"}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
                           {formatCurrency(app.propertyValue)}
@@ -619,13 +681,22 @@ const Reports = () => {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <span
                             className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                              app.status
+                              app.status,
                             )}`}
                           >
                             {(app.status || "unknown")
                               .replace(/_/g, " ")
                               .replace(/\b\w/g, (l) => l.toUpperCase())}
                           </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                          {app.assignedReviewerName || "-"}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                          {app.assignedReviewerEmail || "-"}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-600">
+                          {app.assignedAt ? formatDate(app.assignedAt) : "-"}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-xs text-gray-600">
                           {formatDate(app.createdAt)}
@@ -645,47 +716,47 @@ const Reports = () => {
 
             {/* Pagination */}
             {totalPages > 1 && (
-              <div className="flex items-center justify-between mt-6">
-                <p className="text-sm text-gray-600">
-                  Showing {startIndex + 1} to{" "}
-                  {Math.min(
-                    startIndex + itemsPerPage,
-                    filteredApplications.length
-                  )}{" "}
-                  of {filteredApplications.length} applications
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between mt-6">
+                <p className="text-sm text-slate-600">
+                  Showing {(pageNumber - 1) * pageSize + 1} to{" "}
+                  {Math.min(pageNumber * pageSize, totalCount)} of {totalCount}{" "}
+                  applications
                 </p>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
-                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
-                    disabled={currentPage === 1}
-                    className="flex items-center gap-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
+                    disabled={!hasPreviousPage}
+                    className="flex items-center gap-1 px-3 py-2 border border-slate-300 rounded-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <ChevronLeft className="w-4 h-4" />
                     Previous
                   </button>
                   <div className="flex items-center gap-2">
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(
-                      (page) => (
+                    {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                      const page =
+                        Math.max(1, Math.min(totalPages - 4, pageNumber - 2)) +
+                        i;
+                      return (
                         <button
                           key={page}
-                          onClick={() => setCurrentPage(page)}
-                          className={`px-3 py-2 rounded-lg text-sm font-medium ${
-                            currentPage === page
-                              ? "bg-[#A8C045] text-white"
-                              : "border border-gray-300 text-gray-700 hover:bg-gray-50"
+                          onClick={() => setPageNumber(page)}
+                          className={`px-3 py-2 rounded-sm text-sm font-medium ${
+                            pageNumber === page
+                              ? "bg-[#003883] text-white"
+                              : "border border-slate-300 text-slate-700 hover:bg-slate-100"
                           }`}
                         >
                           {page}
                         </button>
-                      )
-                    )}
+                      );
+                    })}
                   </div>
                   <button
                     onClick={() =>
-                      setCurrentPage(Math.min(totalPages, currentPage + 1))
+                      setPageNumber(Math.min(totalPages, pageNumber + 1))
                     }
-                    disabled={currentPage === totalPages}
-                    className="flex items-center gap-1 px-3 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!hasNextPage}
+                    className="flex items-center gap-1 px-3 py-2 border border-slate-300 rounded-sm text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Next
                     <ChevronRight className="w-4 h-4" />
@@ -694,6 +765,19 @@ const Reports = () => {
               </div>
             )}
           </>
+        )}
+
+        {/* Export Confirmation Modal */}
+        {showExportConfirm && (
+          <ConfirmModal
+            isOpen={showExportConfirm}
+            title="Export Applications Report"
+            message={`Export ${totalCount} applications to Excel? This may take a moment for large datasets.`}
+            confirmText="Download Excel"
+            cancelText="Cancel"
+            onConfirm={handleExportConfirm}
+            onCancel={() => setShowExportConfirm(false)}
+          />
         )}
       </div>
     </div>

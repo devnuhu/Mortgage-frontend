@@ -65,9 +65,14 @@ export const createUser = async (userData) => {
       }
     }
 
-    // Validate CLIENT role has PMI company
-    if (userData.role === "CLIENT" && !userData.pmiCompanyId) {
-      throw new Error("PMI Company is required for CLIENT role");
+    // Validate CLIENT and SERVICE_MANAGER roles have PMI company
+    if (
+      (userData.role === "CLIENT" || userData.role === "SERVICE_MANAGER") &&
+      !userData.pmiCompanyId
+    ) {
+      throw new Error(
+        "PMI Company is required for CLIENT and SERVICE_MANAGER roles",
+      );
     }
 
     // Prepare the payload with explicit null handling
@@ -77,8 +82,9 @@ export const createUser = async (userData) => {
       lastName: userData.lastName?.trim() || "",
       role: userData.role || "",
       temporaryPassword: userData.temporaryPassword || "",
-      // Explicitly handle pmiCompanyId - send null for non-CLIENT roles
-      ...(userData.role === "CLIENT" && userData.pmiCompanyId
+      // Explicitly include pmiCompanyId for CLIENT and SERVICE_MANAGER roles
+      ...((userData.role === "CLIENT" || userData.role === "SERVICE_MANAGER") &&
+      userData.pmiCompanyId
         ? { pmiCompanyId: userData.pmiCompanyId }
         : {}),
     };
@@ -86,7 +92,7 @@ export const createUser = async (userData) => {
     // Detailed payload logging
     console.log(
       "📤 Final payload being sent:",
-      JSON.stringify(payload, null, 2)
+      JSON.stringify(payload, null, 2),
     );
     console.log("📤 Payload keys:", Object.keys(payload));
     console.log("📤 PMI Company ID:", userData.pmiCompanyId);
@@ -113,7 +119,7 @@ export const createUser = async (userData) => {
     if (error.response?.data) {
       console.error(
         "❌ Full server response:",
-        JSON.stringify(error.response.data, null, 2)
+        JSON.stringify(error.response.data, null, 2),
       );
 
       // Check for common .NET validation error patterns
@@ -173,7 +179,7 @@ export const deleteUser = async (userId) => {
     console.log(
       `✅ Delete user ${userId} response:`,
       response.status,
-      response.data
+      response.data,
     );
     return response.data;
   } catch (error) {
@@ -386,11 +392,24 @@ export const getRoleDisplayInfo = (role) => {
       color: "bg-blue-100 text-blue-800",
       icon: "🛡️",
     },
+    LEAD_REVIEWER: {
+      label: "Lead Reviewer",
+      description: "Review queue and escalation manager",
+      color: "bg-indigo-100 text-indigo-800",
+      icon: "🧑‍⚖️",
+    },
     CLIENT: {
       label: "Client",
       description: "PMI company user",
       color: "bg-green-100 text-green-800",
       icon: "👤",
+    },
+    SERVICE_MANAGER: {
+      label: "Service Manager",
+      description:
+        "Create own applications and monitor system-wide submissions",
+      color: "bg-teal-100 text-teal-800",
+      icon: "🧭",
     },
   };
 
@@ -439,13 +458,25 @@ export const validateUserData = (userData = {}) => {
   // Role validation
   if (!userData.role) {
     errors.role = "Role is required";
-  } else if (!["SUPER_ADMIN", "ADMIN", "CLIENT"].includes(userData.role)) {
+  } else if (
+    ![
+      "SUPER_ADMIN",
+      "ADMIN",
+      "LEAD_REVIEWER",
+      "CLIENT",
+      "SERVICE_MANAGER",
+    ].includes(userData.role)
+  ) {
     errors.role = "Invalid role";
   }
 
-  // PMI Company validation for CLIENT role
-  if (userData.role === "CLIENT" && !userData.pmiCompanyId) {
-    errors.pmiCompanyId = "PMI Company is required for Client users";
+  // PMI Company validation for CLIENT and SERVICE_MANAGER roles
+  if (
+    (userData.role === "CLIENT" || userData.role === "SERVICE_MANAGER") &&
+    !userData.pmiCompanyId
+  ) {
+    errors.pmiCompanyId =
+      "PMI Company is required for Client and Service Manager users";
   }
 
   // Password validation
@@ -561,7 +592,7 @@ export const calculateUserStats = (users) => {
         ADMIN: 0,
         CLIENT: 0,
       },
-    }
+    },
   );
 };
 
@@ -580,7 +611,7 @@ export const filterUsers = (users, searchTerm) => {
       user.email.toLowerCase().includes(term) ||
       `${user.firstName} ${user.lastName}`.toLowerCase().includes(term) ||
       user.pmiCompanyName?.toLowerCase().includes(term) ||
-      user.role.toLowerCase().includes(term)
+      user.role.toLowerCase().includes(term),
   );
 };
 
@@ -625,20 +656,50 @@ export const sortUsers = (users, field, order = "asc") => {
 export const hasPermission = (
   currentUserRole,
   targetAction,
-  targetUserRole = null
+  targetUserRole = null,
 ) => {
   const permissions = {
     SUPER_ADMIN: {
-      create: ["SUPER_ADMIN", "ADMIN", "CLIENT"],
-      edit: ["SUPER_ADMIN", "ADMIN", "CLIENT"],
-      delete: ["SUPER_ADMIN", "ADMIN", "CLIENT"],
-      view: ["SUPER_ADMIN", "ADMIN", "CLIENT"],
+      create: [
+        "SUPER_ADMIN",
+        "ADMIN",
+        "LEAD_REVIEWER",
+        "CLIENT",
+        "SERVICE_MANAGER",
+      ],
+      edit: [
+        "SUPER_ADMIN",
+        "ADMIN",
+        "LEAD_REVIEWER",
+        "CLIENT",
+        "SERVICE_MANAGER",
+      ],
+      delete: [
+        "SUPER_ADMIN",
+        "ADMIN",
+        "LEAD_REVIEWER",
+        "CLIENT",
+        "SERVICE_MANAGER",
+      ],
+      view: [
+        "SUPER_ADMIN",
+        "ADMIN",
+        "LEAD_REVIEWER",
+        "CLIENT",
+        "SERVICE_MANAGER",
+      ],
     },
     ADMIN: {
-      create: ["CLIENT"],
-      edit: ["CLIENT"],
-      delete: ["CLIENT"],
-      view: ["ADMIN", "CLIENT"],
+      create: ["CLIENT", "LEAD_REVIEWER"],
+      edit: ["CLIENT", "LEAD_REVIEWER"],
+      delete: ["CLIENT", "LEAD_REVIEWER"],
+      view: ["ADMIN", "CLIENT", "LEAD_REVIEWER"],
+    },
+    LEAD_REVIEWER: {
+      create: [],
+      edit: [],
+      delete: [],
+      view: ["LEAD_REVIEWER"],
     },
     CLIENT: {
       create: [],
@@ -672,6 +733,7 @@ export const formatUserRole = (role) => {
   const roleMap = {
     SUPER_ADMIN: "Super Admin",
     ADMIN: "Admin",
+    LEAD_REVIEWER: "Lead Reviewer",
     CLIENT: "Client",
   };
 
@@ -687,6 +749,7 @@ export const getRoleBadgeColor = (role) => {
   const colorMap = {
     SUPER_ADMIN: "bg-purple-100 text-purple-800",
     ADMIN: "bg-blue-100 text-blue-800",
+    LEAD_REVIEWER: "bg-indigo-100 text-indigo-800",
     CLIENT: "bg-green-100 text-green-800",
   };
 

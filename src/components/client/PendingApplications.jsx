@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../../context/AuthContext";
 import { useApplication } from "../../context/ApplicationContext";
 import {
   Clock,
@@ -25,24 +24,33 @@ import {
   Loader2,
 } from "lucide-react";
 import ConfirmModal from "../ui/ConfirmModal";
+import toast from "react-hot-toast";
 import {
   getMyApplications,
-  getApplicationDocuments,
-  downloadDocument,
+  getMyApplicationsAll,
   getApplicationReviewHistory,
+  downloadDocument,
   getStatusIcon,
   getStatusColor,
   formatCurrency,
   formatDate,
 } from "../../services/application-api";
+import { getDocumentTypes, replaceFileById } from "../../services/api";
+import {
+  getDocumentMaxFileSizeBytes,
+  getDocumentMaxFileSizeLabel,
+  sortDocumentsByDocumentTypeDisplayOrder,
+} from "../../services/documentSize";
+import { getApplicationDetails } from "../../services/review-api";
+import { matchesPendingApplicationSearch } from "./pendingApplicationsSearch";
 
 const PendingApplications = () => {
-  const { user } = useAuth();
   const navigate = useNavigate();
   const { isClientResubmitted, removeClientResubmittedIds } = useApplication();
 
   // State management
   const [applications, setApplications] = useState([]);
+  const [allApplications, setAllApplications] = useState([]);
   const [documents, setDocuments] = useState({});
   const [reviewHistory, setReviewHistory] = useState({});
   const [loading, setLoading] = useState(true);
@@ -53,24 +61,59 @@ const PendingApplications = () => {
   const [statusFilter, setStatusFilter] = useState("all");
   const [sortBy, setSortBy] = useState("createdAt");
   const [sortOrder, setSortOrder] = useState("desc");
+  const [pageNumber, setPageNumber] = useState(1);
+  const [pageSize] = useState(20);
+  const [paginationInfo, setPaginationInfo] = useState({
+    totalPages: 1,
+    totalCount: 0,
+    hasNextPage: false,
+    hasPreviousPage: false,
+  });
   const [selectedApplication, setSelectedApplication] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [cannotEditModal, setCannotEditModal] = useState({
     open: false,
     message: "",
   });
+  const [replacementLoading, setReplacementLoading] = useState({});
 
-  // Load applications on component mount
+  const isStatusFiltering = statusFilter !== "all";
+  const isSearchActive = searchTerm.trim() !== "";
+  const isUsingServerSearch = isSearchActive && !isStatusFiltering;
+
   useEffect(() => {
-    loadApplications();
-  }, []);
+    if (isStatusFiltering) {
+      loadAllApplications();
+      return;
+    }
 
-  // Load applications function
-  const loadApplications = async () => {
+    loadApplications(pageNumber, searchTerm);
+  }, [pageNumber, searchTerm, statusFilter]);
+
+  // Load the full application set when filtering by status
+  useEffect(() => {
+    if (!isStatusFiltering || allApplications.length > 0) return;
+    loadAllApplications();
+  }, [isStatusFiltering, allApplications.length]);
+
+  // Load applications function for paginated browsing
+  const loadApplications = async (page = 1, search = "") => {
     try {
       setLoading(true);
       setError(null);
-      let data = await getMyApplications();
+      const safePage = Number.isFinite(Number(page)) ? Number(page) : 1;
+      const response = await getMyApplications(safePage, pageSize, search);
+      const pagePayload = response?.data || response;
+      let data = Array.isArray(pagePayload)
+        ? pagePayload
+        : pagePayload.data || [];
+
+      setPaginationInfo({
+        totalPages: pagePayload.totalPages || 1,
+        totalCount: pagePayload.totalCount || data.length,
+        hasNextPage: pagePayload.hasNextPage || false,
+        hasPreviousPage: pagePayload.hasPreviousPage || false,
+      });
 
       // Reconcile any client-side resubmitted markers persisted in sessionStorage
       try {
@@ -117,40 +160,73 @@ const PendingApplications = () => {
     }
   };
 
-  // Load documents for a specific application
-  const loadDocuments = async (applicationId) => {
-    if (documents[applicationId]) return; // Already loaded
-
+  // Load the full list of applications when filtering/searching through all data
+  const loadAllApplications = async () => {
     try {
-      setDocumentsLoading((prev) => ({ ...prev, [applicationId]: true }));
-      const docs = await getApplicationDocuments(applicationId);
-      setDocuments((prev) => ({ ...prev, [applicationId]: docs }));
+      setLoading(true);
+      setError(null);
+      const response = await getMyApplicationsAll();
+      const data = Array.isArray(response) ? response : response.data || [];
+      setAllApplications(data);
     } catch (err) {
-      console.error(
-        `Error loading documents for application ${applicationId}:`,
-        err
-      );
-      setDocuments((prev) => ({ ...prev, [applicationId]: [] }));
+      console.error("Error loading all applications for filter/search:", err);
+      setError("Failed to load applications for search. Please try again.");
     } finally {
-      setDocumentsLoading((prev) => ({ ...prev, [applicationId]: false }));
+      setLoading(false);
     }
   };
 
-  // Load review history for a specific application
-  const loadReviewHistory = async (applicationId) => {
-    if (reviewHistory[applicationId]) return; // Already loaded
+  const refreshApplications = async () => {
+    if (isStatusFiltering) {
+      await loadAllApplications();
+    } else {
+      await loadApplications(pageNumber, searchTerm);
+    }
+  };
+
+  // Load full application details for documents and review history
+  const loadApplicationDetails = async (applicationId) => {
+    if (documents[applicationId] && reviewHistory[applicationId]) return;
 
     try {
+      setDocumentsLoading((prev) => ({ ...prev, [applicationId]: true }));
       setReviewHistoryLoading((prev) => ({ ...prev, [applicationId]: true }));
-      const history = await getApplicationReviewHistory(applicationId);
+
+      const details = await getApplicationDetails(applicationId);
+      const docs = Array.isArray(details.documents) ? details.documents : [];
+      const detailsHistory = Array.isArray(details.reviewHistory)
+        ? details.reviewHistory
+        : [];
+
+      const documentTypes =
+        Array.isArray(details.documentTypes) && details.documentTypes.length > 0
+          ? details.documentTypes
+          : await getDocumentTypes();
+      const orderedDocs = sortDocumentsByDocumentTypeDisplayOrder(
+        docs,
+        documentTypes,
+      );
+
+      const historyResponse = await getApplicationReviewHistory(applicationId);
+      const history = Array.isArray(historyResponse)
+        ? historyResponse
+        : detailsHistory;
+
+      setDocuments((prev) => ({ ...prev, [applicationId]: orderedDocs }));
       setReviewHistory((prev) => ({ ...prev, [applicationId]: history }));
+
+      setSelectedApplication((prev) =>
+        prev?.id === applicationId ? { ...prev, ...details } : prev,
+      );
     } catch (err) {
       console.error(
-        `Error loading review history for application ${applicationId}:`,
-        err
+        `Error loading application details for ${applicationId}:`,
+        err,
       );
+      setDocuments((prev) => ({ ...prev, [applicationId]: [] }));
       setReviewHistory((prev) => ({ ...prev, [applicationId]: [] }));
     } finally {
+      setDocumentsLoading((prev) => ({ ...prev, [applicationId]: false }));
       setReviewHistoryLoading((prev) => ({
         ...prev,
         [applicationId]: false,
@@ -164,27 +240,82 @@ const PendingApplications = () => {
       await downloadDocument(document.id, document.fileName);
     } catch (err) {
       console.error("Download failed:", err);
-      // Non-blocking toast notification
-      const toast = (await import("react-hot-toast")).default;
       toast.error("Failed to download document. Please try again.");
     }
   };
 
+  const handleReplaceDocument = async (applicationId, doc) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf";
+
+    input.onchange = async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      if (file.type !== "application/pdf") {
+        toast.error("Only PDF files are allowed.");
+        return;
+      }
+
+      const maxFileSizeBytes = getDocumentMaxFileSizeBytes(
+        doc.documentType || "",
+      );
+      if (file.size > maxFileSizeBytes) {
+        toast.error(
+          `File size must be ${getDocumentMaxFileSizeLabel(doc.documentType || "")} or smaller.`,
+        );
+        return;
+      }
+
+      try {
+        setReplacementLoading((prev) => ({ ...prev, [doc.id]: true }));
+        const replaced = await replaceFileById(
+          doc.id,
+          file,
+          doc.documentType || "",
+        );
+
+        toast.success(
+          "Your document has been re-uploaded and is pending review. Your application status remains rejected until all documents are approved.",
+        );
+
+        setDocuments((prev) => {
+          const existingDocs = prev[applicationId] || [];
+          const updatedDocs = existingDocs.map((item) =>
+            String(item.id) === String(doc.id) ? replaced || item : item,
+          );
+          return { ...prev, [applicationId]: updatedDocs };
+        });
+      } catch (err) {
+        console.error("Replace failed:", err);
+        toast.error(err.message || "Document replace failed.");
+      } finally {
+        setReplacementLoading((prev) => ({ ...prev, [doc.id]: false }));
+        try {
+          event.target.value = "";
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    input.click();
+  };
+
+  const sourceApplications = isStatusFiltering ? allApplications : applications;
+
   // Filter and sort applications
   const filteredAndSortedApplications = useMemo(() => {
-    let filtered = applications.filter((app) => {
-      const matchesSearch =
-        app.applicationNumber
-          .toLowerCase()
-          .includes(searchTerm.toLowerCase()) ||
-        `${app.firstName} ${app.lastName}`
-          .toLowerCase()
-          .includes(searchTerm.toLowerCase()) ||
-        app.rsaPin.toLowerCase().includes(searchTerm.toLowerCase());
+    const source = Array.isArray(sourceApplications) ? sourceApplications : [];
 
+    const filtered = source.filter((app) => {
+      const matchesSearch = isUsingServerSearch
+        ? true
+        : matchesPendingApplicationSearch(app, searchTerm);
       const matchesStatus =
         statusFilter === "all" ||
-        app.status.toLowerCase() === statusFilter.toLowerCase();
+        String(app?.status || "").toLowerCase() === statusFilter.toLowerCase();
 
       return matchesSearch && matchesStatus;
     });
@@ -221,17 +352,41 @@ const PendingApplications = () => {
     });
 
     return filtered;
-  }, [applications, searchTerm, statusFilter, sortBy, sortOrder]);
+  }, [sourceApplications, searchTerm, statusFilter, sortBy, sortOrder]);
+
+  const paginatedApplications = useMemo(() => {
+    if (!isStatusFiltering) return filteredAndSortedApplications;
+    const start = (pageNumber - 1) * pageSize;
+    return filteredAndSortedApplications.slice(start, start + pageSize);
+  }, [filteredAndSortedApplications, isStatusFiltering, pageNumber, pageSize]);
+
+  const activePaginationInfo = useMemo(() => {
+    if (!isStatusFiltering) {
+      return paginationInfo;
+    }
+
+    const totalCount = filteredAndSortedApplications.length;
+    const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+    return {
+      totalPages,
+      totalCount,
+      hasNextPage: pageNumber < totalPages,
+      hasPreviousPage: pageNumber > 1,
+    };
+  }, [
+    filteredAndSortedApplications.length,
+    pageNumber,
+    pageSize,
+    isStatusFiltering,
+    paginationInfo,
+  ]);
 
   // Handle view details
   const handleViewDetails = async (application) => {
     setSelectedApplication(application);
     setShowModal(true);
-    // Load documents and review history when modal opens
-    await Promise.all([
-      loadDocuments(application.id),
-      loadReviewHistory(application.id),
-    ]);
+    // Load full application details for documents and review history
+    await loadApplicationDetails(application.id);
   };
 
   // Handle close modal
@@ -269,9 +424,33 @@ const PendingApplications = () => {
 
   // Get unique statuses for filter dropdown
   const availableStatuses = useMemo(() => {
-    const statuses = [...new Set(applications.map((app) => app.status))];
+    const source = allApplications.length > 0 ? allApplications : applications;
+    const statuses = [
+      ...new Set(source.map((app) => app.status).filter(Boolean)),
+    ];
     return statuses;
-  }, [applications]);
+  }, [allApplications, applications]);
+
+  // Normalize document review status for display
+  const getDocumentReviewStatus = (doc) => {
+    if (!doc) return "unknown";
+    return (
+      doc.reviewStatusName ||
+      doc.reviewStatus ||
+      doc.documentStatus ||
+      doc.status ||
+      "unknown"
+    )
+      .toString()
+      .trim();
+  };
+
+  const hasRejectedDocument = (applicationId) => {
+    const appDocs = documents[applicationId] || [];
+    return appDocs.some(
+      (doc) => getDocumentReviewStatus(doc).toLowerCase() === "rejected",
+    );
+  };
 
   // Status badge component
   const StatusBadge = ({ status }) => {
@@ -365,7 +544,10 @@ const PendingApplications = () => {
               type="text"
               placeholder="Search by application number, name, or RSA PIN..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(e) => {
+                setSearchTerm(e.target.value);
+                setPageNumber(1);
+              }}
               className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
             />
           </div>
@@ -375,7 +557,10 @@ const PendingApplications = () => {
             <Filter className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 w-5 h-5" />
             <select
               value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setPageNumber(1);
+              }}
               className="pl-10 pr-8 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white"
             >
               <option value="all">All Status</option>
@@ -391,7 +576,7 @@ const PendingApplications = () => {
 
           {/* Refresh Button */}
           <button
-            onClick={loadApplications}
+            onClick={refreshApplications}
             className="flex items-center px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
           >
             <RefreshCw className="w-4 h-4 mr-2" />
@@ -470,7 +655,7 @@ const PendingApplications = () => {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-200">
-                {filteredAndSortedApplications.map((application) => (
+                {paginatedApplications.map((application) => (
                   <tr key={application.id} className="hover:bg-gray-50">
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm font-medium text-gray-900">
@@ -504,8 +689,8 @@ const PendingApplications = () => {
                           "rejected"
                             ? "rejected"
                             : isClientResubmitted(application.id)
-                            ? "resubmitted"
-                            : application.status
+                              ? "resubmitted"
+                              : application.status
                         }
                       />
                     </td>
@@ -532,12 +717,43 @@ const PendingApplications = () => {
         )}
       </div>
 
+      {activePaginationInfo.totalPages > 1 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-white border border-gray-200 rounded-lg px-4 py-3">
+          <p className="text-sm text-gray-600">
+            Page {pageNumber} of {activePaginationInfo.totalPages} —{" "}
+            {activePaginationInfo.totalCount} applications total
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
+              disabled={!activePaginationInfo.hasPreviousPage}
+              className="px-3 py-2 rounded-lg border text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white border-gray-300 hover:bg-gray-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setPageNumber(
+                  Math.min(activePaginationInfo.totalPages, pageNumber + 1),
+                )
+              }
+              disabled={!activePaginationInfo.hasNextPage}
+              className="px-3 py-2 rounded-lg border text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed bg-white border-gray-300 hover:bg-gray-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Application Details Modal */}
       {showModal && selectedApplication && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="relative before:absolute before:inset-x-0 before:top-0 before:h-1 before:bg-gradient-to-r before:from-sky-500 before:via-violet-500 before:to-fuchsia-500 bg-white rounded-[1.25rem] shadow-2xl ring-1 ring-slate-200/70 border border-slate-200/80 max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col">
             {/* Modal Header */}
-            <div className="border-b px-6 py-4 flex items-center justify-between flex-shrink-0">
+            <div className="border-b border-slate-200 px-6 py-5 flex items-center justify-between flex-shrink-0">
               <div>
                 <h3 className="text-xl font-semibold text-gray-900">
                   Application Details
@@ -555,11 +771,11 @@ const PendingApplications = () => {
             </div>
 
             {/* Modal Content */}
-            <div className="overflow-y-auto flex-1 min-h-0">
+            <div className="overflow-y-auto flex-1 min-h-0 bg-slate-50">
               <div className="p-6 space-y-6">
                 {/* Application Status */}
-                <div className="bg-gray-50 rounded-lg p-4">
-                  <div className="flex items-center justify-between">
+                <div className="bg-slate-50 rounded-3xl border border-slate-200/80 p-5">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <h4 className="font-medium text-gray-900">
                         Application Status
@@ -594,7 +810,7 @@ const PendingApplications = () => {
                     <User className="w-5 h-5 mr-2" />
                     Borrower Information
                   </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 rounded-lg p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 rounded-3xl border border-slate-200/80 p-5">
                     <div>
                       <label className="block text-sm font-medium text-gray-700">
                         Full Name
@@ -629,7 +845,7 @@ const PendingApplications = () => {
                   <h4 className="font-medium text-gray-900 mb-3 flex items-center">
                     Financial Information
                   </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 rounded-lg p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 rounded-3xl border border-slate-200/80 p-5">
                     <div>
                       <label className="block text-sm font-medium text-gray-700">
                         Loan Amount
@@ -671,7 +887,7 @@ const PendingApplications = () => {
                     <Building2 className="w-5 h-5 mr-2" />
                     PMI Company Information
                   </h4>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-gray-50 rounded-lg p-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50 rounded-3xl border border-slate-200/80 p-5">
                     <div>
                       <label className="block text-sm font-medium text-gray-700">
                         Company Name
@@ -700,64 +916,6 @@ const PendingApplications = () => {
                   </div>
                 </div>
 
-                {/* Review History Section */}
-                <div>
-                  <h4 className="font-medium text-gray-900 mb-3 flex items-center">
-                    <Clock className="w-5 h-5 mr-2" />
-                    Review History
-                  </h4>
-
-                  {reviewHistoryLoading[selectedApplication.id] ? (
-                    <div className="flex items-center justify-center py-8">
-                      <Loader2 className="w-6 h-6 animate-spin text-blue-600 mr-2" />
-                      <span className="text-gray-600">
-                        Loading review history...
-                      </span>
-                    </div>
-                  ) : reviewHistory[selectedApplication.id]?.length > 0 ? (
-                    <div className="space-y-4">
-                      {reviewHistory[selectedApplication.id].map(
-                        (review, index) => (
-                          <div
-                            key={review.id}
-                            className="border border-gray-200 rounded-lg p-4 bg-gray-50"
-                          >
-                            <div className="flex items-start justify-between mb-2">
-                              <div className="flex items-center space-x-2">
-                                <StatusBadge
-                                  status={
-                                    isClientResubmitted(selectedApplication.id)
-                                      ? "resubmitted"
-                                      : review.status
-                                  }
-                                />
-                                <span className="text-sm text-gray-500">
-                                  by {review.reviewedByName}
-                                </span>
-                              </div>
-                              <span className="text-sm text-gray-500">
-                                {formatDate(review.createdAt)}
-                              </span>
-                            </div>
-                            {review.comments && (
-                              <div className="mt-2">
-                                <p className="text-sm text-gray-700 bg-white p-3 rounded border">
-                                  {review.comments}
-                                </p>
-                              </div>
-                            )}
-                          </div>
-                        )
-                      )}
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 text-gray-500">
-                      <Clock className="w-12 h-12 text-gray-300 mx-auto mb-2" />
-                      <p>No review history available</p>
-                    </div>
-                  )}
-                </div>
-
                 {/* Documents Section */}
                 <div>
                   <h4 className="font-medium text-gray-900 mb-3 flex items-center">
@@ -777,32 +935,86 @@ const PendingApplications = () => {
                       {documents[selectedApplication.id].map((doc) => (
                         <div
                           key={doc.id}
-                          className="flex items-center justify-between p-3 border border-gray-200 rounded-lg hover:bg-gray-50"
+                          className="flex flex-col gap-4 p-4 border border-slate-200 rounded-3xl bg-white shadow-sm transition-shadow duration-200 hover:shadow-md sm:flex-row sm:items-start sm:justify-between"
                         >
-                          <div className="flex items-center space-x-3">
-                            <FileText className="w-5 h-5 text-gray-400" />
-                            <div>
-                              <div className="text-sm font-medium text-gray-900">
-                                {doc.fileName}
-                              </div>
-                              <div className="text-xs text-gray-500">
+                          <div className="flex items-start space-x-3 flex-1 min-w-0">
+                            <FileText className="w-5 h-5 text-gray-400 mt-1" />
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-gray-900 truncate">
                                 {doc.documentType
                                   .replace(/_/g, " ")
-                                  .replace(/\b\w/g, (l) =>
-                                    l.toUpperCase()
-                                  )}{" "}
-                                •{(doc.fileSize / 1024 / 1024).toFixed(2)} MB •
-                                {formatDate(doc.createdAt)}
+                                  .replace(/\b\w/g, (l) => l.toUpperCase())}
+                              </div>
+                              <div className="mt-1 text-xs text-gray-500 space-y-1">
+                                <div className="truncate">{doc.fileName}</div>
+                                <div>
+                                  {doc.fileSize
+                                    ? `${(doc.fileSize / 1024 / 1024).toFixed(2)} MB • `
+                                    : ""}
+                                  {formatDate(doc.uploadedAt || doc.createdAt)}
+                                </div>
                               </div>
                             </div>
                           </div>
-                          <button
-                            onClick={() => handleDownload(doc)}
-                            className="flex items-center px-3 py-1 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
-                          >
-                            <Download className="w-4 h-4 mr-1" />
-                            Download
-                          </button>
+                          <div className="flex flex-col sm:items-end sm:justify-between gap-2">
+                            <StatusBadge
+                              status={getDocumentReviewStatus(doc)}
+                            />
+                            {(doc.reviewerComments ||
+                              doc.reviewerName ||
+                              doc.reviewedAt) && (
+                              <div className="text-sm text-right space-y-1">
+                                {doc.reviewerComments && (
+                                  <div>
+                                    <span className="font-medium text-[#FF8200]">
+                                      Rejection reason:
+                                    </span>{" "}
+                                    <span className="text-[#FF8200]">
+                                      {doc.reviewerComments}
+                                    </span>
+                                  </div>
+                                )}
+                                {(doc.reviewerName || doc.reviewedAt) && (
+                                  <div className="text-gray-500">
+                                    <span className="font-medium text-gray-700">
+                                      Reviewed by:
+                                    </span>{" "}
+                                    {doc.reviewerName || "Unknown reviewer"}
+                                    {doc.reviewedAt
+                                      ? ` on ${formatDate(doc.reviewedAt)}`
+                                      : ""}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            {selectedApplication?.status?.toLowerCase() ===
+                              "rejected" &&
+                              getDocumentReviewStatus(doc)
+                                .toLowerCase()
+                                .includes("rejected") && (
+                                <button
+                                  onClick={() =>
+                                    handleReplaceDocument(
+                                      selectedApplication.id,
+                                      doc,
+                                    )
+                                  }
+                                  disabled={replacementLoading[doc.id]}
+                                  className="inline-flex items-center justify-center px-3 py-1 text-sm font-medium text-white bg-[#A8C045] hover:bg-[#94a838] rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                  {replacementLoading[doc.id]
+                                    ? "Replacing..."
+                                    : "Replace Document"}
+                                </button>
+                              )}
+                            <button
+                              onClick={() => handleDownload(doc)}
+                              className="inline-flex items-center px-3 py-1 text-sm text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded transition-colors"
+                            >
+                              <Download className="w-4 h-4 mr-1" />
+                              Download
+                            </button>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -813,18 +1025,81 @@ const PendingApplications = () => {
                     </div>
                   )}
                 </div>
+
+                {/* Review History Section */}
+                <div>
+                  <h4 className="font-medium text-gray-900 mb-3 flex items-center">
+                    <Clock className="w-5 h-5 mr-2" />
+                    Review History
+                  </h4>
+
+                  {reviewHistoryLoading[selectedApplication.id] ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin text-blue-600 mr-2" />
+                      <span className="text-gray-600">
+                        Loading review history...
+                      </span>
+                    </div>
+                  ) : reviewHistory[selectedApplication.id]?.length > 0 ? (
+                    <div className="space-y-4">
+                      {reviewHistory[selectedApplication.id].map((review) => (
+                        <div
+                          key={review.id}
+                          className="border border-slate-200 rounded-3xl p-4 bg-white shadow-sm"
+                        >
+                          <div className="flex items-start justify-between mb-2">
+                            <div className="space-y-1">
+                              <div className="flex items-center space-x-2">
+                                <StatusBadge
+                                  status={
+                                    isClientResubmitted(selectedApplication.id)
+                                      ? "resubmitted"
+                                      : review.status
+                                  }
+                                />
+                                <span className="text-sm text-gray-500">
+                                  by{" "}
+                                  {review.reviewedByName ||
+                                    review.reviewedByEmail ||
+                                    "Unknown reviewer"}
+                                </span>
+                              </div>
+                              {review.reviewedByEmail && (
+                                <div className="text-xs text-gray-400">
+                                  {review.reviewedByEmail}
+                                </div>
+                              )}
+                            </div>
+                            <span className="text-sm text-gray-500">
+                              {formatDate(review.createdAt)}
+                            </span>
+                          </div>
+                          <div className="mt-2">
+                            <p className="text-sm text-gray-700 bg-white p-3 rounded border">
+                              {review.comments || "No comments provided"}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-center py-8 text-gray-500">
+                      <Clock className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+                      <p>No review history available</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="border-t px-6 py-4 bg-gray-50 flex flex-col-reverse sm:flex-row gap-3 sm:gap-4 sm:justify-between items-stretch sm:items-center flex-shrink-0">
+            <div className="border-t border-slate-200 px-6 py-4 bg-white flex flex-col-reverse sm:flex-row gap-3 sm:gap-4 sm:justify-between items-stretch sm:items-center flex-shrink-0">
               {selectedApplication &&
-                (selectedApplication.status === "draft" ||
-                  selectedApplication.status === "returned" ||
-                  selectedApplication.status === "rejected") && (
+                (selectedApplication.status?.toLowerCase() === "draft" ||
+                  selectedApplication.status?.toLowerCase() === "rejected") && (
                   <button
                     onClick={handleEditAndResubmit}
-                    className="px-6 py-2.5 text-sm font-medium text-white bg-[#A8C045] hover:bg-[#94a838] active:bg-[#7d8f2f] rounded-lg transition-all duration-200 shadow-sm hover:shadow-md"
+                    className="px-6 py-2.5 text-sm font-semibold text-white bg-slate-900 hover:bg-slate-700 active:bg-slate-800 rounded-2xl transition-all duration-200 shadow-sm hover:shadow-md"
                   >
                     Edit & Resubmit
                   </button>
