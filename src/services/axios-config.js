@@ -20,12 +20,19 @@ const envReactApp =
     process.env &&
     process.env.REACT_APP_API_URL) ||
   null;
-const API_BASE_URL =
-  envVite || envReactApp || "https://accessmortgageapi.accesspensions.ng/api";
 const isDevelopment =
   (importMetaEnv?.MODE ||
     (typeof process !== "undefined" && process.env?.NODE_ENV) ||
     "development") === "development";
+const configuredApiUrl = envVite || envReactApp;
+const isLocalApiUrl = /^https?:\/\/localhost(?::\d+)?(?:\/|$)/i.test(
+  configuredApiUrl || "",
+);
+const API_BASE_URL =
+  !isDevelopment && isLocalApiUrl
+    ? "https://accessmortgageapi.access-armpensions.com/api"
+    : configuredApiUrl ||
+      "https://accessmortgageapi.access-armpensions.com/api";
 
 // Create axios instance with your .NET API base URL
 const api = axios.create({

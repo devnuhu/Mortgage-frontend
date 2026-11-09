@@ -1,4 +1,5 @@
 import axios from "axios";
+import { CPAS_API_BASE_URL } from "./cpas-config.js";
 
 // Simple in-memory cache to avoid repeated calls
 const CACHE_TTL_MS = 1000 * 60 * 5; // 5 minutes
@@ -17,9 +18,7 @@ const envHniUrl =
   (typeof process !== "undefined" && process.env?.REACT_APP_HNI_API_URL) ||
   null;
 
-const BASE_URL =
-  envHniUrl ||
-  "https://cpasapi.access-armpensions.com/api/Transactions/RsaBalance";
+const BASE_URL = envHniUrl || `${CPAS_API_BASE_URL}/Transactions/RsaBalance`;
 
 const normalizeBalance = (value) => {
   if (value === null || value === undefined) return null;

@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { getApplicationReviewHistoryPaged } from "../../services/application-api";
 import { searchApplications } from "../../services/applicationService";
 import { getApplicationDetails } from "../../services/review-api";
+import { CPAS_API_BASE_URL } from "../../services/cpas-config";
 
 const formatCurrency = (value) => {
   if (value == null || value === "") return "-";
@@ -225,7 +226,7 @@ const ServiceManagerAllApplications = () => {
     setCpasLoading(true);
     setCpasError(null);
     try {
-      const url = `https://cpasapi.access-armpensions.com/api/Website/CaseTracker/${encodeURIComponent(
+      const url = `${CPAS_API_BASE_URL}/Website/CaseTracker/${encodeURIComponent(
         rsaPin,
       )}`;
       const res = await fetch(url);
