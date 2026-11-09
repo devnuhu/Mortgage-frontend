@@ -74,7 +74,12 @@ export const useApplications = (options = {}) => {
         if (isCurrentAdmin) {
           response = await getAllApplications(1, 50);
         } else if ((isCurrentClient || isCurrentServiceManager) && user?.id) {
-          response = await getApplicationsByUser(user.id, 1, 50);
+          response = await getApplicationsByUser(
+            user.id,
+            1,
+            50,
+            isCurrentServiceManager ? filters.search : "",
+          );
         } else if (user?.pmiCompanyId) {
           response = await getApplicationsByPMI(user.pmiCompanyId, 1, 50);
         }
@@ -110,6 +115,7 @@ export const useApplications = (options = {}) => {
       isCurrentAdmin,
       isCurrentClient,
       isCurrentServiceManager,
+      filters.search,
       sortConfig,
     ],
   );

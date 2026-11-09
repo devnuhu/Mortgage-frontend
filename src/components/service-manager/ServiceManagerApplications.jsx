@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import toast from "react-hot-toast";
 import {
@@ -59,14 +59,6 @@ const ServiceManagerApplications = () => {
     );
     return statuses.sort();
   }, [applications]);
-
-  useEffect(() => {
-    if (!filters.search && !filters.status) {
-      return;
-    }
-
-    refresh();
-  }, [filters.search, filters.status, refresh]);
 
   const [selectedApplication, setSelectedApplication] = useState(null);
   const [showModal, setShowModal] = useState(false);

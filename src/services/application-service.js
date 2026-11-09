@@ -50,14 +50,20 @@ export const getApplicationsByUser = async (
   userId,
   pageNumber = 1,
   pageSize = 50,
+  searchTerm = "",
 ) => {
   if (!userId) {
     throw new Error("User ID is required");
   }
 
   try {
+    const params = { pageNumber, pageSize };
+    if (String(searchTerm || "").trim()) {
+      params.searchTerm = String(searchTerm).trim();
+    }
+
     const response = await api.get(ENDPOINTS.applicationsByUserPaged, {
-      params: { pageNumber, pageSize },
+      params,
     });
     return response.data;
   } catch (error) {
