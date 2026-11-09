@@ -33,6 +33,30 @@ const FORM_STEPS = {
 
 const TOTAL_STEPS = 3;
 
+// The API cleans the number and saves it as 234XXXXXXXXXX, so only stringify.
+const toPhoneString = (value) => String(value ?? "").trim();
+
+// Pull the PhoneNumber message out of a 400 response, or null if there is none.
+// Handles ASP.NET-style { errors: { PhoneNumber: [...] } } (including keys such
+// as "$.phoneNumber") and plain messages that mention the phone number.
+const getPhoneNumberServerError = (error) => {
+  if (error?.response?.status !== 400) return null;
+
+  const data = error.response.data;
+  const fieldErrors = data?.errors;
+
+  if (fieldErrors && typeof fieldErrors === "object") {
+    const key = Object.keys(fieldErrors).find((k) => /phonenumber$/i.test(k));
+    if (key) {
+      const message = [fieldErrors[key]].flat().filter(Boolean).join(" ");
+      if (message) return message;
+    }
+  }
+
+  const text = typeof data === "string" ? data : data?.message;
+  return typeof text === "string" && /phone/i.test(text) ? text : null;
+};
+
 const ApplicationContext = createContext();
 
 export const useApplication = () => {
@@ -515,7 +539,7 @@ export const ApplicationProvider = ({ children }) => {
           middleName: currentApplication.middleName || null,
           lastName: currentApplication.lastName,
           rsaPin: currentApplication.rsaPin,
-          phoneNumber: currentApplication.phoneNumber || null,
+          phoneNumber: toPhoneString(currentApplication.phoneNumber) || null,
           equityValue: parseFloat(currentApplication.equityValue),
           supplementaryValue: parseFloat(
             currentApplication.supplementaryValue || 0,
@@ -543,6 +567,12 @@ export const ApplicationProvider = ({ children }) => {
         setBackendDocumentCount(0);
       } catch (error) {
         console.error("❌ Error creating application:", error);
+
+        const phoneError = getPhoneNumberServerError(error);
+        if (phoneError) {
+          setErrors({ phoneNumber: phoneError });
+          return false;
+        }
 
         let errorMessage = "Failed to create application. Please try again.";
         const apiData = error.response?.data;
@@ -627,7 +657,7 @@ export const ApplicationProvider = ({ children }) => {
       // The submitApplicationById returns application data or a success message
       const result = await submitApplicationById(
         currentApplication.backendApplicationId,
-        { phoneNumber: currentApplication.phoneNumber || null },
+        { phoneNumber: toPhoneString(currentApplication.phoneNumber) || null },
       );
 
       console.log("✅ Submit response:", result);
@@ -693,6 +723,14 @@ export const ApplicationProvider = ({ children }) => {
     } catch (error) {
       console.error("❌ Submit application error:", error);
 
+      // The phone field is on the first step, so go back to show the error there
+      const phoneError = getPhoneNumberServerError(error);
+      if (phoneError) {
+        setErrors({ phoneNumber: phoneError });
+        setCurrentStep(FORM_STEPS.CLIENT_DETAILS);
+        return { success: false, error: phoneError };
+      }
+
       let errorMessage = "Failed to submit application. Please try again.";
 
       if (error.response?.data?.message) {
@@ -750,6 +788,7 @@ export const ApplicationProvider = ({ children }) => {
         middleName: applicationDto.middleName || prev.middleName,
         lastName: applicationDto.lastName || prev.lastName,
         rsaPin: applicationDto.rsaPin || prev.rsaPin,
+        phoneNumber: toPhoneString(applicationDto.phoneNumber),
         equityValue:
           applicationDto.equityValue !== undefined
             ? String(applicationDto.equityValue)

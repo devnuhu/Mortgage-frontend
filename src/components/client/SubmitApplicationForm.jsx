@@ -41,6 +41,9 @@ const ClientDetailsStep = () => {
   const [rsaValidationLoading, setRsaValidationLoading] = useState(false);
   const [rsaValidationError, setRsaValidationError] = useState("");
   const [rsaValidationSuccess, setRsaValidationSuccess] = useState(false);
+  // True when a saved application's lookup failed and we carried on with its
+  // saved details, so the "validated" message is not shown.
+  const [rsaLookupSkipped, setRsaLookupSkipped] = useState(false);
   const [rsaAvailabilityLoading, setRsaAvailabilityLoading] = useState(false);
 
   // Auto-populate PMI data from user when component mounts
@@ -158,51 +161,62 @@ const ClientDetailsStep = () => {
       setRsaValidationError("");
       setRsaValidationLoading(true);
       setRsaValidationSuccess(false);
+      setRsaLookupSkipped(false);
+
+      const isSavedApplication = Boolean(currentApplication.backendApplicationId);
 
       try {
-        const response = await validateRsaPin(pin);
-        // GetBiodata endpoint returns data directly (fname, mname, rsapin, title)
-        // Check if we have valid response data with fname field
-        if (response?.fname) {
-          const validatedData = response;
-          updateApplicationField("firstName", validatedData.fname || "");
-          updateApplicationField("middleName", validatedData.mname || "");
-          updateApplicationField("lastName", validatedData.lname || "");
-          // Auto-populate phone number if available from RSA validation
+        // The Mortgage API does the CPAS lookup and checks the phone number.
+        // Any 200 reply is a success: { firstName, middleName, lastName, phoneNumber }.
+        const borrower = await validateRsaPin(pin);
+        updateApplicationField("firstName", borrower?.firstName ?? "");
+        updateApplicationField("middleName", borrower?.middleName ?? "");
+        updateApplicationField("lastName", borrower?.lastName ?? "");
+        // Never change a saved application's phone number.
+        const hasSavedPhone =
+          isSavedApplication &&
+          String(currentApplication.phoneNumber ?? "").trim();
+        if (!hasSavedPhone) {
           updateApplicationField(
             "phoneNumber",
-            validatedData.phoneNumber ||
-              validatedData.phonenumber ||
-              validatedData.phone ||
-              validatedData.msisdn ||
-              validatedData.mobile ||
-              "",
-          );
-          setRsaValidationSuccess(true);
-        } else {
-          // Show friendly message from server if available, otherwise a generic one
-          setRsaValidationError(
-            response?.message || "No active RSA account found for this PIN.",
+            String(borrower?.phoneNumber ?? "").trim(),
           );
         }
+        setRsaValidationSuccess(true);
       } catch (error) {
-        const status = error?.response?.status;
-        const serverMsg = error?.response?.data?.message || error?.message;
-
-        if (status === 400 || /status code 400/i.test(error?.message || "")) {
-          // Map backend 400 to a friendly, domain-specific message
-          setRsaValidationError("Please enter a valid Access Arm RSA PIN");
-        } else {
-          setRsaValidationError(
-            serverMsg ||
-              "Unable to verify PIN right now. Check your connection and try again.",
-          );
+        if (isSavedApplication) {
+          // Saved application: keep its saved details and carry on as before.
+          console.warn("Borrower lookup failed for saved application:", error);
+          setRsaLookupSkipped(true);
+          setRsaValidationSuccess(true);
+          return;
         }
+
+        // New application: clear the read-only borrower fields so Next stays
+        // disabled (first and last name are required).
+        updateApplicationField("firstName", "");
+        updateApplicationField("middleName", "");
+        updateApplicationField("lastName", "");
+        updateApplicationField("phoneNumber", "");
+
+        const apiMessage = error?.response?.data?.message;
+        setRsaValidationError(
+          typeof apiMessage === "string" && apiMessage.trim()
+            ? apiMessage
+            : !error?.response && error?.message
+              ? error.message // network/timeout text from axios-config
+              : "We could not verify your RSA details right now. Please try again in a few minutes.",
+        );
       } finally {
         setRsaValidationLoading(false);
       }
     },
-    [setRsaPinAvailability, updateApplicationField],
+    [
+      currentApplication.backendApplicationId,
+      currentApplication.phoneNumber,
+      setRsaPinAvailability,
+      updateApplicationField,
+    ],
   );
 
   const checkDuplicateRsaPin = useCallback(
@@ -283,6 +297,14 @@ const ClientDetailsStep = () => {
     ],
   );
 
+  // First/middle/last name and phone come from the RSA lookup and are never
+  // editable. The API takes them from CPAS on create and ignores them on update.
+  const lockedFieldClass = (hasError) =>
+    `w-full px-4 py-3 border rounded-lg cursor-not-allowed ${
+      hasError ? "border-red-300 bg-red-50" : "border-slate-300 bg-slate-100"
+    }`;
+  const borrowerFieldPlaceholder = "Filled from RSA PIN";
+
   const handleRSAPinBlur = async () => {
     const pin = currentApplication.rsaPin?.trim();
     await validateRsaPinValue(pin);
@@ -293,6 +315,7 @@ const ClientDetailsStep = () => {
     resetForm();
     setRsaValidationError("");
     setRsaValidationSuccess(false);
+    setRsaLookupSkipped(false);
     setRsaValidationLoading(false);
     setRsaPinAvailability({
       exists: false,
@@ -435,7 +458,7 @@ const ClientDetailsStep = () => {
           {rsaValidationLoading && (
             <p className="text-sm text-slate-500 mt-1">Validating RSA PIN…</p>
           )}
-          {rsaValidationSuccess && !rsaValidationLoading && (
+          {rsaValidationSuccess && !rsaLookupSkipped && !rsaValidationLoading && (
             <p className="text-sm text-green-600 mt-1">
               RSA PIN validated and name fields auto-populated.
             </p>
@@ -511,18 +534,10 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={currentApplication.firstName || ""}
-              onChange={(e) =>
-                updateApplicationField("firstName", e.target.value)
-              }
-              placeholder="Enter first name"
-              disabled={rsaValidationSuccess}
-              className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.firstName
-                  ? "border-red-300 bg-red-50"
-                  : rsaValidationSuccess
-                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
-                    : "border-gray-300"
-              }`}
+              placeholder={borrowerFieldPlaceholder}
+              readOnly
+              disabled
+              className={lockedFieldClass(errors.firstName)}
             />
             {errors.firstName && (
               <p className="text-red-600 text-sm mt-1 flex items-center">
@@ -539,18 +554,10 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={currentApplication.middleName || ""}
-              onChange={(e) =>
-                updateApplicationField("middleName", e.target.value)
-              }
-              placeholder="Enter middle name (optional)"
-              disabled={rsaValidationSuccess}
-              className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.middleName
-                  ? "border-red-300 bg-red-50"
-                  : rsaValidationSuccess
-                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
-                    : "border-gray-300"
-              }`}
+              placeholder={borrowerFieldPlaceholder}
+              readOnly
+              disabled
+              className={lockedFieldClass(errors.middleName)}
             />
             {errors.middleName && (
               <p className="text-red-600 text-sm mt-1 flex items-center">
@@ -567,18 +574,10 @@ const ClientDetailsStep = () => {
             <input
               type="text"
               value={currentApplication.lastName || ""}
-              onChange={(e) =>
-                updateApplicationField("lastName", e.target.value)
-              }
-              placeholder="Enter last name"
-              disabled={rsaValidationSuccess}
-              className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.lastName
-                  ? "border-red-300 bg-red-50"
-                  : rsaValidationSuccess
-                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
-                    : "border-gray-300"
-              }`}
+              placeholder={borrowerFieldPlaceholder}
+              readOnly
+              disabled
+              className={lockedFieldClass(errors.lastName)}
             />
             {errors.lastName && (
               <p className="text-red-600 text-sm mt-1 flex items-center">
@@ -595,18 +594,10 @@ const ClientDetailsStep = () => {
             <input
               type="tel"
               value={currentApplication.phoneNumber || ""}
-              onChange={(e) =>
-                updateApplicationField("phoneNumber", e.target.value)
-              }
-              placeholder="Enter phone number"
-              disabled={rsaValidationSuccess}
-              className={`w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-[#A8C045] focus:border-transparent ${
-                errors.phoneNumber
-                  ? "border-red-300 bg-red-50"
-                  : rsaValidationSuccess
-                    ? "border-slate-300 bg-slate-100 cursor-not-allowed"
-                    : "border-gray-300"
-              }`}
+              placeholder={borrowerFieldPlaceholder}
+              readOnly
+              disabled
+              className={lockedFieldClass(errors.phoneNumber)}
             />
             {errors.phoneNumber && (
               <p className="text-red-600 text-sm mt-1 flex items-center">

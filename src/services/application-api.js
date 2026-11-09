@@ -1,7 +1,4 @@
 import api from "./axios-config.js";
-import axios from "axios";
-
-const RSA_VALIDATION_BASE_URL = "https://cpasapi.access-armpensions.com/api";
 
 export const normalizePaginationParams = (
   pageNumberInput = 1,
@@ -286,10 +283,11 @@ export const getApplicationReviewHistoryPaged = async (
 };
 
 /**
- * Validate RSA PIN against external pension API
- * GET https://cpasapi.access-armpensions.com/api/Portal/ValidateMpsPin/{RsaPin}
+ * Look up the borrower for an RSA PIN. The Mortgage API does the CPAS lookup.
+ * GET /api/borrower-lookup/{RsaPin}
  * @param {string} rsaPin - Full RSA PIN including PEN prefix
- * @returns {Promise<Object>} Validation response
+ * @returns {Promise<{firstName: string, middleName: string, lastName: string, phoneNumber: string}>}
+ *   Rejects on a non-2xx reply; a 400 carries { message } for the user.
  */
 export const validateRsaPin = async (rsaPin) => {
   try {
@@ -297,19 +295,13 @@ export const validateRsaPin = async (rsaPin) => {
       throw new Error("RSA PIN is required for validation");
     }
 
-    const response = await axios.get(
-      `${RSA_VALIDATION_BASE_URL}/Portal/GetBiodata/${encodeURIComponent(
-        rsaPin,
-      )}`,
+    const response = await api.get(
+      `/borrower-lookup/${encodeURIComponent(rsaPin)}`,
     );
 
     return response.data;
   } catch (error) {
-    if (error?.response?.status === 404) {
-      throw new Error("Invalid rsapin");
-    }
-
-    console.error(`❌ Validate RSA PIN ${rsaPin} error:`, error);
+    console.error(`❌ Borrower lookup ${rsaPin} error:`, error);
     throw error;
   }
 };

@@ -601,8 +601,6 @@ export const validateBorrowerInfo = (borrower) => {
   if (!borrower.email?.trim()) errors.email = "Email is required";
   else if (!/\S+@\S+\.\S+/.test(borrower.email))
     errors.email = "Invalid email format";
-  if (!borrower.phoneNumber?.trim())
-    errors.phoneNumber = "Phone number is required";
   if (!borrower.nationalId?.trim())
     errors.nationalId = "National ID is required";
   if (!borrower.occupation?.trim())
